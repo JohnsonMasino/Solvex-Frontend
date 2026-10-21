@@ -2,19 +2,29 @@ import { lazy, Suspense } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import './App.css'
 
+// Helpers
 import ScrollToTop from './components/ScrollToTop'
 import PrivateRoute from './components/PrivateRoute'
 import PageSpinner from './components/Pagespinner'
 
+// Legal Pages
+import PrivacyPolicy from './pages/legal/Privacy'
+import RiskDisclosure from './pages/legal/Risk'
+import TermsOfService from './pages/legal/Terms'
+import Aml from './pages/legal/Aml'
+import Certificate from './pages/legal/Cert'
+import CookiePolicy from './pages/legal/Cookie'
+
 // ── Home is loaded straight away so the first paint has no spinner ──
 import Home from './pages/outside/HomePage'
+import AboutUs from './pages/outside/AboutPage'
 
-// ── Public pages (lazy) ──
-// // NOTE: adjust these import paths to match your folders.
+// ── Authenticated pages
 // const Login = lazy(() => import('./pages/outside/Login'))
 // const Signup = lazy(() => import('./pages/outside/Signup'))
-// const AboutUs = lazy(() => import('./pages/outside/AboutUs'))
-// const Certificates = lazy(() => import('./pages/outside/Certificates'))
+
+
+// 404 Page
 const NotFound = lazy(() => import('./pages/outside/NotFound'))
 
 // // ── Protected pages (lazy) ──
@@ -37,10 +47,18 @@ export default function App() {
         <Routes>
           {/* ── PUBLIC routes ── */}
           <Route path="/" element={<Home />} />
-          {/* <Route path="/login" element={<Login />} />
-          <Route path="/signup" element={<Signup />} />
           <Route path="/about-us" element={<AboutUs />} />
-          <Route path="/certificates" element={<Certificates />} /> */}
+
+          {/* ── Auth routes ── */}
+
+          {/* ── Legal routes ── */}
+          <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+          <Route path="/risk-disclosure" element={<RiskDisclosure />} />
+          <Route path="/terms-of-service" element={<TermsOfService />} />
+          <Route path="/aml-policy" element={<Aml />} />
+          <Route path="/certificates" element={<Certificate />} />
+          <Route path="/cookie-policy" element={<CookiePolicy />} />
+
 
           {/* ── PROTECTED routes: everything inside needs a login ── */}
           <Route element={<PrivateRoute />}>
