@@ -52,7 +52,7 @@ const TEAM = [
   {
     name: 'Sophie Ramsay',
     title: 'Head of Trading',
-    image: '/hot.jfif',
+    image: '/hot.png',
     experience: '14+ years',
     bio: 'A markets specialist who has worked across currency and digital asset trading. She oversees market analysis, trading education and the way our traders are supported day to day.',
     focus: ['Crypto', 'Technical analysis', 'Trader education'],
