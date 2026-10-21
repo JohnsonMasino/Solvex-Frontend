@@ -44,7 +44,7 @@ const TEAM = [
   {
     name: 'James Whitfield',
     title: 'Chief Executive Officer',
-    image: '/team/ceo.jpg',
+    image: '/ceo.jpg',
     experience: '18+ years',
     bio: 'Began his career on a forex desk and has traded major currency pairs through several market cycles. He leads the company’s strategy, client standards and risk governance.',
     focus: ['Forex', 'Strategy', 'Risk governance'],
@@ -52,7 +52,7 @@ const TEAM = [
   {
     name: 'Sophie Ramsay',
     title: 'Head of Trading',
-    image: '/team/head-of-trading.jpg',
+    image: '/hot.jfif',
     experience: '14+ years',
     bio: 'A markets specialist who has worked across currency and digital asset trading. She oversees market analysis, trading education and the way our traders are supported day to day.',
     focus: ['Crypto', 'Technical analysis', 'Trader education'],

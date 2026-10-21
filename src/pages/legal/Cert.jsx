@@ -25,9 +25,9 @@ import {
   ZoomOut,
 } from 'lucide-react'
 
-// Both files live in the same folder as this component
-import certImage from '../../../public/Cert.jpeg'
-import certPdf from '../../../public/Cert.pdf'
+// Files live in the /public folder, so they are served from the site root (no import needed)
+const certImage = '/Cert.jpeg'
+const certPdf = '/Cert.pdf'
 
 // PDF.js worker (Vite)
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
@@ -42,7 +42,6 @@ const COMPANY = {
   address: '5 Quinton Road, Coventry, CV1 2WT, United Kingdom',
 }
 const LAST_UPDATED = '21 October 2026'
-const COMPANIES_HOUSE_URL = 'https://find-and-update.company-information.service.gov.uk/'
 
 const RELATED = [
   { label: 'Terms of Service', to: '/terms-of-service' },
@@ -407,6 +406,7 @@ export default function Certificate() {
             {tab === 'image' ? <ImageViewer /> : <PdfViewer />}
           </div>
         </motion.section>
+
         {/* Related policies + navigation */}
         <div className="mt-8 rounded-2xl border border-white/10 bg-[#0B141B] p-5 sm:p-7">
           <p className="text-sm font-semibold text-white">Related policies</p>
