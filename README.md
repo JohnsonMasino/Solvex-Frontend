@@ -100,7 +100,7 @@ my-react-app/
 └── README.md
 ```
 
-*The structure may change as the application develops.*
+*The structure may change as the application development progresses.*
 
 ## 🔐 Security and Financial Risk
 
