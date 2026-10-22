@@ -16,12 +16,10 @@ import {
   ZoomOut,
 } from 'lucide-react'
 
-// The image lives in the /public folder, so it is served from the site root (no import needed)
-const certImage = '../../public/cert.jpeg'
-
 /* ────────────────────────────────────────────────
    DOCUMENT DETAILS  (edit here)
 ──────────────────────────────────────────────── */
+
 const COMPANY = {
   name: 'Solvexmarketinc',
   founded: 2012,
@@ -127,7 +125,7 @@ function ImageViewer() {
           <Maximize2 className="h-4 w-4 text-[#3DDC97]" aria-hidden="true" />
           View full size
         </button>
-        <a href={certImage} download="Certificate-of-Registration.jpeg" className={btn}>
+        <a href="/cert.jpeg" download="Certificate-of-Registration.jpeg" className={btn}>
           <Download className="h-4 w-4 text-[#3DDC97]" aria-hidden="true" />
           Download image
         </a>
@@ -139,14 +137,14 @@ function ImageViewer() {
           className="group relative block w-full cursor-zoom-in overflow-hidden rounded-xl bg-[#0F1A22] p-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 sm:p-4"
           aria-label="Open certificate image full size"
         >
-          <img src={certImage} alt="Company registration certificate" className="mx-auto h-auto max-h-[80vh] w-auto max-w-full rounded-lg shadow-2xl" />
+          <img src="/cert.jpeg" alt="Company registration certificate" className="mx-auto h-auto max-h-[80vh] w-auto max-w-full rounded-lg shadow-2xl" />
           <span className="pointer-events-none absolute bottom-4 right-4 inline-flex items-center gap-1.5 rounded-full bg-[#080D12]/85 px-3 py-1 text-xs text-white opacity-0 ring-1 ring-white/15 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
             <ZoomIn className="h-3.5 w-3.5 text-[#3DDC97]" aria-hidden="true" />
             Click to zoom
           </span>
         </button>
       </div>
-      <AnimatePresence>{open && <ImageLightbox src={certImage} onClose={() => setOpen(false)} />}</AnimatePresence>
+      <AnimatePresence>{open && <ImageLightbox src="/cert.jpeg" onClose={() => setOpen(false)} />}</AnimatePresence>
     </div>
   )
 }
