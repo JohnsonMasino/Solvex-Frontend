@@ -37,7 +37,7 @@ const Dashboard = lazy(() => import('./pages/inside/DashHome'))
 // const Trade = lazy(() => import('./pages/inside/Trade'))
 // const Kyc = lazy(() => import('./pages/inside/Kyc'))
 // const Transactions = lazy(() => import('./pages/inside/Transactions'))
-// const Profile = lazy(() => import('./pages/inside/Profile'))
+const Profile = lazy(() => import('./pages/inside/Profile'))
 
 export default function App() {
   return (
@@ -76,7 +76,7 @@ export default function App() {
             {/* <Route path="/dashboard/trade" element={<Trade />} /> */}
             {/* <Route path="/dashboard/kyc" element={<Kyc />} /> */}
             {/* <Route path="/dashboard/transactions" element={<Transactions />} /> */}
-            {/* <Route path="/dashboard/profile" element={<Profile />} /> */}
+            <Route path="/dashboard/profile" element={<Profile />} />
           </Route>
 
           {/* ── 404: any unknown URL ── */}
