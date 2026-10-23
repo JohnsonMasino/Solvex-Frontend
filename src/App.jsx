@@ -20,8 +20,11 @@ import Home from './pages/outside/HomePage'
 import AboutUs from './pages/outside/AboutPage'
 
 // ── Authenticated pages
-// const Login = lazy(() => import('./pages/outside/Login'))
-// const Signup = lazy(() => import('./pages/outside/Signup'))
+// const Login = lazy(() => import('./pages/auth/Login'))
+const Signup = lazy(() => import('./pages/auth/Signup'))
+const Login = lazy(() => import('./pages/auth/Login'))
+const ResetPass = lazy(() => import('./pages/auth/ResetPass'))
+const ResetPassConfirm = lazy(() => import('./pages/auth/ResetPassConfirm'))
 
 
 // 404 Page
@@ -50,6 +53,11 @@ export default function App() {
           <Route path="/about-us" element={<AboutUs />} />
 
           {/* ── Auth routes ── */}
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/forgot-password" element={<ResetPass />} />
+          <Route path="/reset-password/:uid/:token" element={<ResetPassConfirm />} />
+
 
           {/* ── Legal routes ── */}
           <Route path="/privacy-policy" element={<PrivacyPolicy />} />
@@ -62,13 +70,13 @@ export default function App() {
 
           {/* ── PROTECTED routes: everything inside needs a login ── */}
           <Route element={<PrivateRoute />}>
-            {/* <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/dashboard/deposit" element={<Deposit />} />
-            <Route path="/dashboard/withdraw" element={<Withdraw />} />
-            <Route path="/dashboard/trade" element={<Trade />} />
-            <Route path="/dashboard/kyc" element={<Kyc />} />
-            <Route path="/dashboard/transactions" element={<Transactions />} />
-            <Route path="/dashboard/profile" element={<Profile />} /> */}
+            {/* <Route path="/dashboard" element={<Dashboard />} /> */}
+            {/* <Route path="/dashboard/deposit" element={<Deposit />} /> */}
+            {/* <Route path="/dashboard/withdraw" element={<Withdraw />} /> */}
+            {/* <Route path="/dashboard/trade" element={<Trade />} /> */}
+            {/* <Route path="/dashboard/kyc" element={<Kyc />} /> */}
+            {/* <Route path="/dashboard/transactions" element={<Transactions />} /> */}
+            {/* <Route path="/dashboard/profile" element={<Profile />} /> */}
           </Route>
 
           {/* ── 404: any unknown URL ── */}
