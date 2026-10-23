@@ -31,7 +31,7 @@ const ResetPassConfirm = lazy(() => import('./pages/auth/ResetPassConfirm'))
 const NotFound = lazy(() => import('./pages/outside/NotFound'))
 
 // // ── Protected pages (lazy) ──
-// const Dashboard = lazy(() => import('./pages/inside/Dashboard'))
+const Dashboard = lazy(() => import('./pages/inside/DashHome'))
 // const Deposit = lazy(() => import('./pages/inside/Deposit'))
 // const Withdraw = lazy(() => import('./pages/inside/Withdraw'))
 // const Trade = lazy(() => import('./pages/inside/Trade'))
@@ -70,7 +70,7 @@ export default function App() {
 
           {/* ── PROTECTED routes: everything inside needs a login ── */}
           <Route element={<PrivateRoute />}>
-            {/* <Route path="/dashboard" element={<Dashboard />} /> */}
+            <Route path="/dashboard" element={<Dashboard />} />
             {/* <Route path="/dashboard/deposit" element={<Deposit />} /> */}
             {/* <Route path="/dashboard/withdraw" element={<Withdraw />} /> */}
             {/* <Route path="/dashboard/trade" element={<Trade />} /> */}

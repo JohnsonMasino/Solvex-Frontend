@@ -5,7 +5,7 @@ import { Navigate, Outlet, useLocation } from 'react-router-dom'
 // Currently reads a token from localStorage. Later, swap this check for your
 // real auth state (Context, Zustand, etc).
 export default function PrivateRoute({ children }) {
-  const token = localStorage.getItem('solvex_token')
+  const token = localStorage.getItem('accessToken')
   const location = useLocation()
 
   if (!token) {
