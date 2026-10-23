@@ -679,10 +679,13 @@ export default function Profile() {
               Edit profile
             </Link>
           </motion.div>
+        </motion.div>
+
+        <motion.div variants={item} className="lg:col-span-2 lg:flex lg:justify-end">
           <motion.div whileTap={reduce ? undefined : { scale: 0.98 }}>
             <Link
               to={DASH_URL}
-              className="inline-flex mt-2 mb-2 h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#3DDC97] px-8 text-sm font-semibold text-[#06140E] transition-colors hover:bg-[#5BEBAD] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0E1822] sm:text-base lg:w-auto"
+              className="inline-flex mb-4 mt-[-16px] h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#3DDC97] px-8 text-sm font-semibold text-[#06140E] transition-colors hover:bg-[#5BEBAD] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0E1822] sm:text-base lg:w-auto"
             >
               Dashboard
             </Link>
