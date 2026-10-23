@@ -378,7 +378,7 @@ function MarketsChartSection() {
   const worst = [...visible].sort((a, b) => a.change - b.change)[0]
 
   const tabs = [
-    { id: 'all', label: 'All 20' },
+    { id: 'all', label: 'All' },
     { id: 'crypto', label: 'Crypto' },
     { id: 'forex', label: 'Forex' },
   ]
@@ -394,7 +394,7 @@ function MarketsChartSection() {
       <Heading
         icon={Activity}
         eyebrow="Market overview"
-        title="The top 20 crypto and forex pairs, in one view"
+        title="The top crypto and forex pairs, in one view"
         text="Ten leading crypto pairs and ten major forex pairs plotted together. Select a pair to isolate it, or filter by market."
       />
 
