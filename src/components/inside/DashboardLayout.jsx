@@ -1,0 +1,345 @@
+// src/components/Inside/DashboardLayout.jsx
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { AlertCircle, Loader2, LogOut, Menu, Settings } from 'lucide-react'
+import api from '../Api'
+import Sidebar, { TierBadge } from './Sidebar'
+import { NAV_ITEMS, SETTINGS_ITEM, firstNameOf } from './Navconfig'
+
+const PROFILE_URL = '/dashboard/profile'
+const SESSION_KEYS = ['accessToken', 'refreshToken', 'user', 'isAuthenticated']
+
+// Kept at module level so moving between dashboard pages doesn't
+// flash a loading state each time the layout mounts again.
+let cachedUser = null
+
+// Neutral, unisex avatar: head and shoulders on a round background
+function ProfileIcon() {
+  return (
+    <svg viewBox="0 0 32 32" className="h-full w-full" aria-hidden="true">
+      <circle cx="16" cy="16" r="16" fill="#1D3042" />
+      <circle cx="16" cy="12.5" r="5" fill="#9FB4C7" />
+      <path d="M6.5 27c.8-5 4.9-8 9.5-8s8.7 3 9.5 8a15 15 0 0 1-19 0z" fill="#9FB4C7" />
+    </svg>
+  )
+}
+
+const iconBtn =
+  'grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-slate-300 transition-colors hover:border-white/25 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70'
+
+export default function DashboardLayout({ children }) {
+  const reduce = useReducedMotion()
+  const navigate = useNavigate()
+
+  const [user, setUser] = useState(cachedUser)
+  const [loading, setLoading] = useState(!cachedUser)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
+  const busy = useRef(false)
+  const cancelRef = useRef(null)
+
+  const closeMenu = useCallback(() => setMenuOpen(false), [])
+
+  // Fetch the signed-in user (name, email, tier)
+  useEffect(() => {
+    let alive = true
+    api
+      .get('/api/auth/me/')
+      .then((res) => {
+        const data = res.data?.data
+        if (!alive || !data) return
+        cachedUser = data
+        setUser(data)
+      })
+      .catch(() => {
+        /* The Api interceptor already handles expired sessions */
+      })
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  /* ── Logout ── */
+  const cancelLogout = useCallback(() => {
+    if (busy.current) return
+    setConfirmOpen(false)
+    setLogoutError('')
+  }, [])
+
+  useEffect(() => {
+    if (!confirmOpen) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') cancelLogout()
+    }
+    document.addEventListener('keydown', onKey)
+    cancelRef.current?.focus()
+    return () => document.removeEventListener('keydown', onKey)
+  }, [confirmOpen, cancelLogout])
+
+  const finishLogout = () => {
+    SESSION_KEYS.forEach((key) => localStorage.removeItem(key))
+    cachedUser = null
+    navigate('/login', { replace: true })
+  }
+
+  const confirmLogout = async () => {
+    if (busy.current) return
+    const refresh = localStorage.getItem('refreshToken')
+    if (!refresh) {
+      finishLogout()
+      return
+    }
+    busy.current = true
+    setLoggingOut(true)
+    setLogoutError('')
+    try {
+      await api.post('/api/auth/logout/', { refresh })
+      finishLogout()
+    } catch (err) {
+      const status = err?.response?.status
+      // 400 means the token was already logged out or expired, 401 means the
+      // session is gone. Either way the user is effectively signed out.
+      if (status === 400 || status === 401) {
+        finishLogout()
+        return
+      }
+      setLogoutError(
+        err?.response
+          ? 'We could not log you out. Please try again.'
+          : 'Network error. Check your connection and try again.',
+      )
+    } finally {
+      busy.current = false
+      setLoggingOut(false)
+    }
+  }
+
+  const firstName = user ? firstNameOf(user) : ''
+  const desktopLink = (isActive) =>
+    `inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 ${
+      isActive ? 'bg-white/[0.08] text-white' : 'text-slate-400 hover:bg-white/[0.04] hover:text-white'
+    }`
+
+  return (
+    <div className="min-h-screen bg-[#0E1822] text-slate-300">
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0E1822]/90 backdrop-blur">
+        <div className="mx-auto grid h-14 max-w-7xl grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 sm:px-6 lg:h-16 lg:grid-cols-[auto_1fr_auto] lg:gap-6 lg:px-8">
+          {/* Left: hamburger on mobile, logo on desktop */}
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={() => setMenuOpen(true)}
+              aria-label="Open menu"
+              aria-expanded={menuOpen}
+              className={`${iconBtn} lg:hidden`}
+            >
+              <Menu className="h-5 w-5" aria-hidden="true" />
+            </button>
+
+            <Link
+              to="/dashboard"
+              aria-label="Solvexmarketinc dashboard"
+              className="hidden items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:flex"
+            >
+              <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#14212D] ring-1 ring-white/10">
+                <img src="/Logo_nbg.png" alt="" className="h-7 w-7 object-contain" draggable="false" />
+              </span>
+              <span className="hidden text-base font-semibold tracking-tight text-white xl:block">
+                SOLVE<span className="text-[#FF4D4F]">X</span>
+                <span className="text-[#3DDC97]">MARKETINC</span>
+              </span>
+            </Link>
+          </div>
+
+          {/* Center: name + tier on mobile, nav links on desktop */}
+          <div className="flex min-w-0 justify-center">
+            <div className="min-w-0 max-w-[46vw] text-center lg:hidden">
+              {user ? (
+                <>
+                  <p className="truncate text-sm font-semibold leading-tight text-white">{firstName}</p>
+                  <div className="mt-0.5 flex justify-center">
+                    <TierBadge tier={user.tier} small />
+                  </div>
+                </>
+              ) : loading ? (
+                <div className="flex flex-col items-center gap-1.5" aria-hidden="true">
+                  <div className="h-3.5 w-16 animate-pulse rounded bg-white/10" />
+                  <div className="h-3 w-10 animate-pulse rounded bg-white/[0.06]" />
+                </div>
+              ) : (
+                <p className="text-sm font-semibold text-white">My account</p>
+              )}
+            </div>
+
+            <nav aria-label="Dashboard" className="hidden items-center gap-1 lg:flex">
+              {NAV_ITEMS.map((item) => {
+                const Icon = item.icon
+                return (
+                  <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => desktopLink(isActive)}>
+                    {({ isActive }) => (
+                      <>
+                        <Icon className={`h-4 w-4 ${isActive ? 'text-[#3DDC97]' : ''}`} aria-hidden="true" />
+                        {item.label}
+                      </>
+                    )}
+                  </NavLink>
+                )
+              })}
+            </nav>
+          </div>
+
+          {/* Right: profile icon on mobile, account controls on desktop */}
+          <div className="flex items-center justify-end gap-2">
+            <Link
+              to={PROFILE_URL}
+              aria-label="Open profile"
+              className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/15 transition-shadow hover:ring-[#3DDC97]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:hidden"
+            >
+              <ProfileIcon />
+            </Link>
+
+            <div className="hidden items-center gap-2 lg:flex">
+              <Link
+                to={PROFILE_URL}
+                className="flex items-center gap-2.5 rounded-xl border border-white/10 py-1 pl-1 pr-3 transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70"
+              >
+                <span className="h-8 w-8 shrink-0 overflow-hidden rounded-full ring-1 ring-white/10">
+                  <ProfileIcon />
+                </span>
+                {user ? (
+                  <span className="min-w-0 text-left">
+                    <span className="block max-w-[9rem] truncate text-sm font-medium leading-tight text-white">
+                      {firstName}
+                    </span>
+                    <TierBadge tier={user.tier} small />
+                  </span>
+                ) : (
+                  <span className="text-sm font-medium text-white">{loading ? '' : 'My account'}</span>
+                )}
+              </Link>
+
+              <NavLink
+                to={SETTINGS_ITEM.to}
+                aria-label="Settings"
+                title="Settings"
+                className={({ isActive }) => `${iconBtn} ${isActive ? 'border-white/25 bg-white/[0.08] text-white' : ''}`}
+              >
+                <Settings className="h-[18px] w-[18px]" aria-hidden="true" />
+              </NavLink>
+
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(true)}
+                aria-label="Log out"
+                title="Log out"
+                className={`${iconBtn} hover:border-rose-400/40 hover:text-rose-300`}
+              >
+                <LogOut className="h-[18px] w-[18px]" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <Sidebar
+        open={menuOpen}
+        onClose={closeMenu}
+        user={user}
+        loading={loading}
+        onLogout={() => setConfirmOpen(true)}
+      />
+
+      {/* Page content */}
+      <motion.main
+        initial={reduce ? false : { opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
+        className="mx-auto w-full max-w-7xl px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-5 sm:px-6 sm:pt-8 lg:px-8"
+      >
+        {children}
+      </motion.main>
+
+      {/* Logout confirmation */}
+      <AnimatePresence>
+        {confirmOpen && (
+          <motion.div
+            key="logout-overlay"
+            className="fixed inset-0 z-[60] grid place-items-center bg-black/60 p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reduce ? 0 : 0.18 }}
+            onClick={cancelLogout}
+          >
+            <motion.div
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="logout-title"
+              aria-describedby="logout-desc"
+              onClick={(e) => e.stopPropagation()}
+              initial={reduce ? false : { opacity: 0, y: 14, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={reduce ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.98 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#14212D] p-5 shadow-2xl shadow-black/50 sm:p-6"
+            >
+              <span className="grid h-11 w-11 place-items-center rounded-xl bg-rose-500/10 text-rose-300 ring-1 ring-rose-400/20">
+                <LogOut className="h-5 w-5" aria-hidden="true" />
+              </span>
+              <h2 id="logout-title" className="mt-4 text-lg font-semibold text-white">
+                Log out of your account?
+              </h2>
+              <p id="logout-desc" className="mt-1.5 text-sm leading-relaxed text-slate-400">
+                You will need to sign in again to reach your dashboard.
+              </p>
+
+              {logoutError && (
+                <div
+                  role="alert"
+                  className="mt-4 flex items-start gap-2.5 rounded-xl border border-[#F6465D]/30 bg-[#F6465D]/10 px-3.5 py-3 text-sm text-red-200"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[#F6465D]" aria-hidden="true" />
+                  <span>{logoutError}</span>
+                </div>
+              )}
+
+              <div className="mt-6 flex flex-col-reverse gap-2.5 sm:flex-row sm:justify-end">
+                <button
+                  ref={cancelRef}
+                  type="button"
+                  onClick={cancelLogout}
+                  disabled={loggingOut}
+                  className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 px-5 text-sm font-medium text-slate-200 transition-colors hover:border-white/30 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmLogout}
+                  disabled={loggingOut}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-rose-500 px-5 text-sm font-semibold text-white transition-colors hover:bg-rose-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/80 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {loggingOut ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Logging out…
+                    </>
+                  ) : (
+                    'Log out'
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
