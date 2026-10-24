@@ -1,7 +1,7 @@
 import DashboardLayout from "../../components/inside/DashboardLayout";
 import Settings from "../../components/inside/Settings";
 
-const DashHome = () => {
+const SettingsPage = () => {
   return (
     <>
     <DashboardLayout>
@@ -11,4 +11,4 @@ const DashHome = () => {
   );
 };
 
-export default DashHome;
+export default SettingsPage;

@@ -32,11 +32,12 @@ const NotFound = lazy(() => import('./pages/outside/NotFound'))
 
 // // ── Protected pages (lazy) ──
 const Dashboard = lazy(() => import('./pages/inside/DashHome'))
-// const Deposit = lazy(() => import('./pages/inside/Deposit'))
-// const Withdraw = lazy(() => import('./pages/inside/Withdraw'))
+const Deposit = lazy(() => import('./pages/inside/DepositPage'))
+const Withdraw = lazy(() => import('./pages/inside/WithdrawPage'))
+const Referral = lazy(() => import('./pages/inside/ReferralPage'))
 // const Trade = lazy(() => import('./pages/inside/Trade'))
 const Kyc = lazy(() => import('./pages/inside/Kyc'))
-// const Transactions = lazy(() => import('./pages/inside/Transactions'))
+const Transactions = lazy(() => import('./pages/inside/Transactions'))
 const Profile = lazy(() => import('./pages/inside/Profile'))
 const ProfileEdit = lazy(() => import('./pages/inside/ProfileEdit'))
 const Settings = lazy(() => import('./pages/inside/SettingsPage'))
@@ -73,11 +74,12 @@ export default function App() {
           {/* ── PROTECTED routes: everything inside needs a login ── */}
           <Route element={<PrivateRoute />}>
             <Route path="/dashboard" element={<Dashboard />} />
-            {/* <Route path="/dashboard/deposit" element={<Deposit />} /> */}
-            {/* <Route path="/dashboard/withdraw" element={<Withdraw />} /> */}
+            <Route path="/dashboard/deposit" element={<Deposit />} />
+            <Route path="/dashboard/withdraw" element={<Withdraw />} />
+            <Route path="/dashboard/referrals" element={<Referral />} />
             {/* <Route path="/dashboard/trade" element={<Trade />} /> */}
             <Route path="/dashboard/kyc" element={<Kyc />} />
-            {/* <Route path="/dashboard/transactions" element={<Transactions />} /> */}
+            <Route path="/dashboard/transactions" element={<Transactions />} />
             <Route path="/dashboard/profile" element={<Profile />} />
             <Route path="/dashboard/profile/edit" element={<ProfileEdit />} />
             <Route path="/dashboard/settings" element={<Settings />} />
