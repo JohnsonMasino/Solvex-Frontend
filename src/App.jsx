@@ -35,7 +35,8 @@ const Dashboard = lazy(() => import('./pages/inside/DashHome'))
 const Deposit = lazy(() => import('./pages/inside/DepositPage'))
 const Withdraw = lazy(() => import('./pages/inside/WithdrawPage'))
 const Referral = lazy(() => import('./pages/inside/ReferralPage'))
-// const Trade = lazy(() => import('./pages/inside/Trade'))
+const Trade = lazy(() => import('./pages/inside/TradePage'))
+const TradeHistory = lazy(() => import('./pages/inside/TradeHistory'))
 const Kyc = lazy(() => import('./pages/inside/Kyc'))
 const Transactions = lazy(() => import('./pages/inside/Transactions'))
 const Profile = lazy(() => import('./pages/inside/Profile'))
@@ -77,7 +78,8 @@ export default function App() {
             <Route path="/dashboard/deposit" element={<Deposit />} />
             <Route path="/dashboard/withdraw" element={<Withdraw />} />
             <Route path="/dashboard/referrals" element={<Referral />} />
-            {/* <Route path="/dashboard/trade" element={<Trade />} /> */}
+            <Route path="/dashboard/trade" element={<Trade />} />
+            <Route path="/dashboard/trade-history" element={<TradeHistory />} />
             <Route path="/dashboard/kyc" element={<Kyc />} />
             <Route path="/dashboard/transactions" element={<Transactions />} />
             <Route path="/dashboard/profile" element={<Profile />} />
