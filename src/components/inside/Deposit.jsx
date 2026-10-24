@@ -25,10 +25,16 @@ const HIDE_KEY = 'balanceHidden'
 const MASK = '••••••'
 const PAY_WINDOW_MS = 30 * 60 * 1000 // 30 minutes to pay
 const REVIEW_SECONDS = 5 // "pending review" screen before redirecting
-const QUICK_AMOUNTS = [50, 100, 250, 500, 1000]
-const MAX_DECIMALS = 6
+const QUICK_AMOUNTS = [50, 100, 250, 500, 1000] // USDT units, or USD for BTC / ETH
+const DEFAULT_DECIMALS = 6
+const DEFAULT_REFRESH_SECONDS = 30
 const STEPS = ['Amount', 'Payment', 'Review']
 const PHASE_INDEX = { form: 0, pay: 1, review: 2 }
+
+// QR images live in /public and are named after the network value (bep20.jfif, btc.jfif, eth.jfif ...)
+const QR_EXTENSIONS = ['jfif', 'png', 'jpg', 'jpeg', 'webp']
+
+const ASSET_NAMES = { usdt: 'Tether USD', btc: 'Bitcoin', eth: 'Ethereum' }
 
 const container = {
   hidden: {},
@@ -45,6 +51,8 @@ const NETWORK_STYLE = {
   bep20: 'bg-amber-400/[0.15] text-amber-300',
   erc20: 'bg-violet-400/[0.15] text-violet-300',
   trc20: 'bg-[#F6465D]/[0.15] text-red-300',
+  btc: 'bg-orange-400/[0.15] text-orange-300',
+  eth: 'bg-indigo-400/[0.15] text-indigo-300',
 }
 const NETWORK_FALLBACK = 'bg-sky-400/[0.15] text-sky-300'
 
@@ -77,6 +85,21 @@ function makeMoney(currency) {
   }
 }
 
+// Rates need more precision than balances: $1.0002, $95,123.45
+function makeRate(currency) {
+  try {
+    const f = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    })
+    return (v) => f.format(num(v))
+  } catch {
+    return (v) => `$${num(v)}`
+  }
+}
+
 // "500.000000" -> "500", "12.500000" -> "12.5"
 const trimZeros = (v) => {
   const s = String(v ?? '')
@@ -84,14 +107,20 @@ const trimZeros = (v) => {
   return s.replace(/0+$/, '').replace(/\.$/, '')
 }
 
-// Keeps only digits and one dot, at most 6 decimals
-function cleanAmount(raw) {
+// Rounds UP to `d` decimals and returns a fixed string (used for minimums and quick amounts)
+const ceilTo = (v, d) => {
+  const f = 10 ** d
+  return (Math.ceil(v * f - 1e-9) / f).toFixed(d)
+}
+
+// Keeps only digits and one dot, at most `maxDecimals` decimals
+function cleanAmount(raw, maxDecimals = DEFAULT_DECIMALS) {
   let v = String(raw).replace(/,/g, '.').replace(/[^0-9.]/g, '')
   const i = v.indexOf('.')
-  if (i !== -1) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/\./g, '').slice(0, MAX_DECIMALS)
+  if (i !== -1) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/\./g, '').slice(0, maxDecimals)
   v = v.replace(/^0+(?=\d)/, '')
   if (v.startsWith('.')) v = `0${v}`
-  return v.slice(0, 14)
+  return v.slice(0, 18)
 }
 
 // "USDT (BEP20 – BNB Smart Chain)" -> { title: "USDT", sub: "BEP20 – BNB Smart Chain" }
@@ -100,6 +129,11 @@ function splitLabel(label, fallback) {
   if (m) return { title: m[1] || 'USDT', sub: m[2] }
   return { title: label || fallback.toUpperCase(), sub: '' }
 }
+
+// A network can be used only when the server says so, it has an address and a live rate
+const isNetworkAvailable = (n) => Boolean(n?.deposit_enabled) && Boolean(n?.deposit_address) && num(n?.rate) > 0
+
+const assetFromNetwork = (network) => (network === 'btc' ? 'btc' : network === 'eth' ? 'eth' : 'usdt')
 
 const mmss = (ms) => {
   const total = Math.max(0, Math.ceil(ms / 1000))
@@ -155,7 +189,7 @@ const loadError = (err, what) => {
   return `We could not load ${what}.`
 }
 
-// Errors for creating a deposit. Returns { message, amount?, action? }
+// Errors for creating a deposit. Returns { message, amount?, action?, refresh? }
 function describeSubmitError(err) {
   const res = err?.response
   if (!res) return { message: 'Network error. Check your connection and try again.' }
@@ -165,7 +199,11 @@ function describeSubmitError(err) {
   const serverMsg = typeof data?.message === 'string' ? data.message : ''
 
   if (status === 400) {
-    const amount = flatten(data?.errors?.usdt_amount)[0]
+    // Minimum is checked in USD at the live rate, so show the server message under the amount
+    if (code === 'deposit_below_minimum') {
+      return { message: '', amount: serverMsg || 'The amount is below the minimum deposit.', refresh: true }
+    }
+    const amount = flatten(data?.errors?.amount)[0] || flatten(data?.errors?.usdt_amount)[0]
     const first = flatten(data?.errors)[0]
     return {
       message: amount ? '' : serverMsg || first || 'Please check the details and try again.',
@@ -197,8 +235,12 @@ function describeSubmitError(err) {
     }
   }
   if (status === 503) {
+    if (code === 'rate_unavailable') {
+      return { message: 'Rate temporarily unavailable, please try again in a moment.', refresh: true }
+    }
     return {
       message: serverMsg || 'Deposits on this network are temporarily unavailable. Please try another network.',
+      refresh: true,
     }
   }
   if (status >= 500) return { message: 'Something went wrong on our side. Please try again in a moment.' }
@@ -281,6 +323,22 @@ function Block({ className }) {
   return <div className={`animate-pulse rounded-2xl bg-[#14212D] ${className}`} aria-hidden="true" />
 }
 
+// "Rate updated 12s ago" (ticks every second on its own, so the page does not re-render)
+function RateAge({ ts }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const t = ts ? Date.parse(ts) : NaN
+  if (!Number.isFinite(t)) return null
+  const s = Math.max(0, Math.floor((now - t) / 1000))
+  const text = s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`
+  return <span>Rate updated {text}</span>
+}
+
 function CopyIconBtn({ text, label }) {
   const [done, setDone] = useState(false)
   const timer = useRef(null)
@@ -360,16 +418,21 @@ function Stepper({ index, reduce }) {
   )
 }
 
+// Loads /{network}.jfif (btc.jfif, eth.jfif, bep20.jfif ...) and falls back to other common extensions
 function QrImage({ network }) {
-  const [ok, setOk] = useState(true)
+  const [extIndex, setExtIndex] = useState(0)
+  const failed = extIndex >= QR_EXTENSIONS.length
+  const label = String(network || '').toUpperCase()
+
   return (
     <div className="grid h-44 w-44 place-items-center overflow-hidden rounded-2xl bg-white p-2.5 sm:h-52 sm:w-52">
-      {ok ? (
+      {!failed ? (
         <img
-          src={`/${network}.jfif`}
-          alt={`QR code for the ${network.toUpperCase()} deposit address`}
+          key={extIndex}
+          src={`/${network}.${QR_EXTENSIONS[extIndex]}`}
+          alt={`QR code for the ${label} deposit address`}
           className="h-full w-full object-contain"
-          onError={() => setOk(false)}
+          onError={() => setExtIndex((i) => i + 1)}
           draggable="false"
         />
       ) : (
@@ -426,7 +489,7 @@ function BalanceCard({ wallet, loading, error, hidden, onToggle, money, onRetry 
 }
 
 function NetworkOption({ n, selected, onSelect, reduce }) {
-  const available = Boolean(n.deposit_address)
+  const available = isNetworkAvailable(n)
   const { title, sub } = splitLabel(n.label, n.value)
   return (
     <button
@@ -449,7 +512,7 @@ function NetworkOption({ n, selected, onSelect, reduce }) {
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-medium text-white sm:text-sm">{title}</span>
         <span className="mt-0.5 block truncate text-[11px] text-slate-400 sm:text-xs">
-          {available ? sub || 'Tether USD' : 'Temporarily unavailable'}
+          {available ? sub || ASSET_NAMES[n.asset] || String(n.asset || '').toUpperCase() : 'Temporarily unavailable'}
         </span>
       </span>
       <span
@@ -482,11 +545,17 @@ function FormStep({
   onRetryCfg,
   amount,
   setAmount,
+  chip,
+  onQuick,
   setNetwork,
   activeNetwork,
+  asset,
+  unit,
+  decimals,
   rate,
+  fmtRate,
   minUsd,
-  minUsdt,
+  minText,
   usd,
   amountMsg,
   canSubmit,
@@ -498,7 +567,8 @@ function FormStep({
 }) {
   const networks = cfg?.networks || []
   const amt = num(amount)
-  const showSummary = amt > 0
+  const showSummary = amt > 0 && rate > 0
+  const isStable = asset === 'usdt'
 
   if (cfgLoading && !cfg) {
     return (
@@ -512,6 +582,9 @@ function FormStep({
   if (!cfg) {
     return <InlineError message={cfgError || 'We could not load deposit settings.'} onRetry={onRetryCfg} />
   }
+
+  // USDT: quick amounts are USDT. BTC / ETH: quick amounts are USD, converted at the estimated rate.
+  const quick = rate > 0 ? QUICK_AMOUNTS.filter((q) => (isStable ? q * rate >= minUsd : q >= minUsd)) : []
 
   return (
     <form onSubmit={onSubmit} noValidate className="space-y-4 sm:space-y-5">
@@ -533,16 +606,16 @@ function FormStep({
             type="text"
             inputMode="decimal"
             autoComplete="off"
-            placeholder="0.00"
+            placeholder={isStable ? '0.00' : `0.${'0'.repeat(decimals)}`}
             value={amount}
-            onChange={(e) => setAmount(cleanAmount(e.target.value))}
+            onChange={(e) => setAmount(cleanAmount(e.target.value, decimals))}
             aria-invalid={Boolean(amountMsg)}
             aria-describedby="deposit-amount-hint"
             disabled={submitting}
             className="min-w-0 flex-1 bg-transparent font-mono text-2xl font-semibold tabular-nums text-white placeholder:text-slate-600 focus:outline-none sm:text-3xl"
           />
           <span className="shrink-0 rounded-lg bg-[#3DDC97]/[0.15] px-2.5 py-1 font-mono text-xs font-bold text-[#3DDC97] sm:text-sm">
-            USDT
+            {unit}
           </span>
         </div>
 
@@ -551,35 +624,47 @@ function FormStep({
           className={`mt-2 px-0.5 text-[11px] sm:text-xs ${amountMsg ? 'text-red-300' : 'text-slate-400'}`}
           aria-live="polite"
         >
-          {amountMsg || `Minimum deposit is ${money(minUsd)} (${trimZeros(minUsdt.toFixed(2))} USDT).`}
+          {amountMsg || (rate > 0 ? `Minimum deposit is ${money(minUsd)} (≈ ${minText} ${unit}).` : 'Choose an available network to continue.')}
         </p>
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          {QUICK_AMOUNTS.filter((q) => q * rate >= minUsd).map((q) => {
-            const on = amount === String(q)
-            return (
-              <button
-                key={q}
-                type="button"
-                disabled={submitting}
-                onClick={() => setAmount(String(q))}
-                aria-pressed={on}
-                className={`h-9 rounded-full px-3.5 font-mono text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:opacity-60 sm:text-[13px] ${
-                  on ? 'bg-[#3DDC97] text-[#06231A]' : 'bg-white/[0.05] text-slate-300 hover:bg-white/[0.09] hover:text-white'
-                }`}
-              >
-                {q.toLocaleString('en-US')}
-              </button>
-            )
-          })}
-        </div>
+        {quick.length > 0 && (
+          <>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {quick.map((q) => {
+                const on = isStable ? amount === String(q) : chip === q
+                const label = isStable ? q.toLocaleString('en-US') : `$${q.toLocaleString('en-US')}`
+                return (
+                  <button
+                    key={q}
+                    type="button"
+                    disabled={submitting}
+                    onClick={() =>
+                      isStable ? onQuick(String(q), q) : onQuick(trimZeros(ceilTo(q / rate, decimals)), q)
+                    }
+                    aria-pressed={on}
+                    className={`h-9 rounded-full px-3.5 font-mono text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:opacity-60 sm:text-[13px] ${
+                      on ? 'bg-[#3DDC97] text-[#06231A]' : 'bg-white/[0.05] text-slate-300 hover:bg-white/[0.09] hover:text-white'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+            {!isStable && (
+              <p className="mt-2 px-0.5 text-[11px] text-slate-500 sm:text-xs">
+                Quick amounts are in USD and converted to {unit} at the estimated rate.
+              </p>
+            )}
+          </>
+        )}
       </section>
 
       {/* Network */}
       <section aria-label="Network" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
         <p className="px-0.5 text-[13px] font-semibold text-white sm:text-sm">Choose a network</p>
         <p className="mt-0.5 px-0.5 text-[11px] text-slate-400 sm:text-xs">
-          You will send USDT on the network you pick here.
+          You will send {unit} on the network you pick here.
         </p>
 
         {networks.length === 0 ? (
@@ -612,20 +697,31 @@ function FormStep({
             transition={{ duration: 0.25, ease: 'easeOut' }}
             className="overflow-hidden"
           >
-            <dl className="space-y-2.5 rounded-2xl bg-[#14212D] p-4 text-[13px] sm:text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <dt className="text-slate-400">You send</dt>
-                <dd className="font-mono font-semibold tabular-nums text-white">{trimZeros(amount)} USDT</dd>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <dt className="text-slate-400">Rate</dt>
-                <dd className="font-mono tabular-nums text-slate-200">1 USDT = {money(rate)}</dd>
-              </div>
-              <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
-                <dt className="font-medium text-slate-200">Credited to your balance</dt>
-                <dd className="font-mono text-base font-semibold tabular-nums text-[#3DDC97]">{money(usd)}</dd>
-              </div>
-            </dl>
+            <div className="rounded-2xl bg-[#14212D] p-4">
+              <dl className="space-y-2.5 text-[13px] sm:text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-slate-400">You send</dt>
+                  <dd className="break-all text-right font-mono font-semibold tabular-nums text-white">
+                    {trimZeros(amount)} {unit}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-slate-400">Estimated rate</dt>
+                  <dd className="font-mono tabular-nums text-slate-200">
+                    1 {unit} = {fmtRate(rate)}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
+                  <dt className="font-medium text-slate-200">Estimated credit</dt>
+                  <dd className="font-mono text-base font-semibold tabular-nums text-[#3DDC97]">≈ {money(usd)}</dd>
+                </div>
+              </dl>
+              <p className="mt-3 text-[11px] leading-relaxed text-slate-500 sm:text-xs">
+                <RateAge ts={activeNetwork?.rate_updated_at} />
+                {activeNetwork?.rate_updated_at ? '. ' : ''}
+                The final USD credit is set at the live rate when you continue and can differ slightly from this estimate.
+              </p>
+            </div>
           </motion.section>
         )}
       </AnimatePresence>
@@ -653,15 +749,17 @@ function FormStep({
    STEP 2: PAY
 ──────────────────────────────────────────────── */
 
-function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, reduce }) {
+function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, fmtRate, reduce }) {
   const expired = left <= 0
   const pct = Math.min(100, (left / PAY_WINDOW_MS) * 100)
   const urgent = left < 60 * 1000
   const warn = left < 5 * 60 * 1000
   const timerColor = urgent ? 'text-[#F6465D]' : warn ? 'text-amber-300' : 'text-[#3DDC97]'
   const barColor = urgent ? 'bg-[#F6465D]' : warn ? 'bg-amber-400' : 'bg-[#3DDC97]'
-  const amountText = trimZeros(deposit.usdt_amount)
+  const amountText = trimZeros(deposit.amount)
+  const unit = String(deposit.asset || assetFromNetwork(deposit.network)).toUpperCase()
   const netLabel = deposit.network.toUpperCase()
+  const lockedRate = num(deposit.rate)
   const busy = cancelling || expired
 
   return (
@@ -712,12 +810,18 @@ function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, reduce })
           </div>
           <div className="mt-2 flex items-center gap-2">
             <p className="min-w-0 flex-1 break-all font-mono text-2xl font-semibold tabular-nums text-[#3DDC97] sm:text-3xl">
-              {amountText} <span className="text-base text-slate-300 sm:text-lg">USDT</span>
+              {amountText} <span className="text-base text-slate-300 sm:text-lg">{unit}</span>
             </p>
             <CopyIconBtn text={amountText} label="Copy amount" />
           </div>
           <p className="mt-1.5 text-[11px] text-slate-400 sm:text-xs">
             You will be credited <span className="font-medium text-slate-200">{money(num(deposit.usd_amount))}</span>
+            {lockedRate > 0 && (
+              <>
+                {' '}
+                at <span className="font-mono text-slate-300">1 {unit} = {fmtRate(lockedRate)}</span>
+              </>
+            )}
           </p>
         </div>
 
@@ -759,7 +863,7 @@ function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, reduce })
         </p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-[12px] leading-relaxed text-amber-100/80 sm:text-[13px]">
           <li>
-            Send exactly {amountText} USDT. A different amount may delay or block your credit.
+            Send exactly {amountText} {unit}. A different amount may delay or block your credit.
           </li>
           <li>Use the {netLabel} network only. Funds sent on another network can be lost.</li>
           <li>Tap “I have paid” after your transfer so our team can review it.</li>
@@ -860,6 +964,7 @@ export default function Deposit() {
 
   // form
   const [amount, setAmount] = useState('')
+  const [chip, setChip] = useState(null) // selected USD quick amount (BTC / ETH only)
   const [network, setNetwork] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
@@ -879,6 +984,7 @@ export default function Deposit() {
 
   const alive = useRef(true)
   const closing = useRef(false)
+  const cfgBusy = useRef(false)
 
   useEffect(() => {
     alive.current = true
@@ -923,6 +1029,42 @@ export default function Deposit() {
     }
   }, [attempt])
 
+  // Silent refresh of the config (live rates). Errors are ignored, the last good rates stay on screen.
+  const refreshConfig = useCallback(() => {
+    if (cfgBusy.current) return
+    cfgBusy.current = true
+    api
+      .get('/api/wallet/config/')
+      .then((res) => {
+        if (!alive.current) return
+        const data = res.data?.data
+        if (data && typeof data === 'object') setCfg(data)
+      })
+      .catch(() => {})
+      .finally(() => {
+        cfgBusy.current = false
+      })
+  }, [])
+
+  const hasCfg = Boolean(cfg)
+  const refreshMs = Math.max(5, num(cfg?.rate_refresh_seconds) || DEFAULT_REFRESH_SECONDS) * 1000
+
+  // Re-fetch rates every rate_refresh_seconds while the form is visible. Paused when the tab is hidden.
+  useEffect(() => {
+    if (phase !== 'form' || !hasCfg) return undefined
+
+    const tick = () => {
+      if (!document.hidden) refreshConfig()
+    }
+    const id = setInterval(tick, refreshMs)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [phase, hasCfg, refreshMs, refreshConfig])
+
   const retryLoad = () => {
     setWalletErr('')
     setCfgErr('')
@@ -945,28 +1087,54 @@ export default function Deposit() {
 
   const currency = wallet?.currency || cfg?.currency || 'USD'
   const money = useMemo(() => makeMoney(currency), [currency])
+  const fmtRate = useMemo(() => makeRate(currency), [currency])
 
-  const rate = num(cfg?.rate) || 1
-  const minUsd = num(cfg?.min_deposit_usd)
-  const minUsdt = minUsd / rate
   const networks = useMemo(() => cfg?.networks || [], [cfg])
-  const activeNetwork = networks.find((n) => n.value === network && n.deposit_address) || networks.find((n) => n.deposit_address) || null
+  const activeNetwork =
+    networks.find((n) => n.value === network && isNetworkAvailable(n)) || networks.find((n) => isNetworkAvailable(n)) || null
+
+  const asset = String(activeNetwork?.asset || 'usdt').toLowerCase()
+  const unit = asset.toUpperCase()
+  const decimals = num(activeNetwork?.decimals) || DEFAULT_DECIMALS
+  const rate = num(activeNetwork?.rate)
+  const minUsd = num(cfg?.min_deposit_usd)
+  const minAsset = rate > 0 ? minUsd / rate : 0
+  const minText = trimZeros(ceilTo(minAsset, asset === 'usdt' ? 2 : decimals))
 
   const amt = num(amount)
-  const usd = amt * rate
-  const belowMin = amt > 0 && usd + 1e-9 < minUsd
-  const amountMsg = amountErr || (belowMin ? `The minimum deposit is ${money(minUsd)} (${trimZeros(minUsdt.toFixed(2))} USDT).` : '')
-  const canSubmit = !submitting && amt > 0 && !belowMin && Boolean(activeNetwork)
+  const usd = amt * rate // estimate only, the server re-prices on submit
+  const belowMin = amt > 0 && rate > 0 && usd + 1e-9 < minUsd
+  const amountMsg =
+    amountErr || (belowMin ? `The minimum deposit is ${money(minUsd)} (≈ ${minText} ${unit}).` : '')
+  const canSubmit = !submitting && amt > 0 && !belowMin && Boolean(activeNetwork) && rate > 0
 
   const onAmountChange = (v) => {
     setAmount(v)
+    setChip(null)
+    setAmountErr('')
+    setFormError(null)
+  }
+
+  const onQuick = (value, q) => {
+    setAmount(value)
+    setChip(q)
     setAmountErr('')
     setFormError(null)
   }
 
   const onNetworkChange = (v) => {
+    const next = networks.find((n) => n.value === v)
     setNetwork(v)
     setFormError(null)
+    setAmountErr('')
+    if (!next) return
+    if (activeNetwork && next.asset !== activeNetwork.asset) {
+      // Different asset (e.g. USDT -> BTC): the old number would mean something else, so start clean
+      setAmount('')
+      setChip(null)
+    } else {
+      setAmount((a) => cleanAmount(a, num(next.decimals) || DEFAULT_DECIMALS))
+    }
   }
 
   const submit = async (e) => {
@@ -979,7 +1147,7 @@ export default function Deposit() {
 
     try {
       const res = await api.post('/api/wallet/deposits/', {
-        usdt_amount: amt.toFixed(MAX_DECIMALS),
+        amount: amount.endsWith('.') ? amount.slice(0, -1) : amount,
         network: activeNetwork.value,
       })
       const d = res.data?.data
@@ -988,8 +1156,14 @@ export default function Deposit() {
         setFormError({ message: 'We could not read your deposit details. Please try again.' })
         return
       }
+      const net = String(d.network || activeNetwork.value).toLowerCase()
       closing.current = false
-      setDeposit({ ...d, network: String(d.network || activeNetwork.value).toLowerCase() })
+      setDeposit({
+        ...d,
+        network: net,
+        asset: String(d.asset || activeNetwork.asset || assetFromNetwork(net)).toLowerCase(),
+        amount: d.amount ?? d.usdt_amount ?? amount,
+      })
       setEndAt(Date.now() + PAY_WINDOW_MS)
       setPhase('pay')
     } catch (err) {
@@ -997,6 +1171,7 @@ export default function Deposit() {
       const info = describeSubmitError(err)
       if (info.amount) setAmountErr(info.amount)
       if (info.message) setFormError({ message: info.message, action: info.action })
+      if (info.refresh) refreshConfig()
     } finally {
       if (alive.current) setSubmitting(false)
     }
@@ -1017,6 +1192,7 @@ export default function Deposit() {
       setDeposit(null)
       setEndAt(null)
       setAmount('')
+      setChip(null)
       setAmountErr('')
       setFormError(null)
       setCancelling(false)
@@ -1027,7 +1203,8 @@ export default function Deposit() {
       )
       closing.current = false
       setPhase('form')
-      // Refresh the balance for the fresh start
+      // Refresh the balance and live rates for the fresh start
+      refreshConfig()
       api
         .get('/api/wallet/')
         .then((res) => {
@@ -1035,7 +1212,7 @@ export default function Deposit() {
         })
         .catch(() => {})
     },
-    [deposit],
+    [deposit, refreshConfig],
   )
 
   const left = useCountdown(phase === 'pay' ? endAt : null, () => closeDeposit('expired'))
@@ -1113,12 +1290,17 @@ export default function Deposit() {
                   onRetryCfg={retryLoad}
                   amount={amount}
                   setAmount={onAmountChange}
-                  network={network}
+                  chip={chip}
+                  onQuick={onQuick}
                   setNetwork={onNetworkChange}
                   activeNetwork={activeNetwork}
+                  asset={asset}
+                  unit={unit}
+                  decimals={decimals}
                   rate={rate}
+                  fmtRate={fmtRate}
                   minUsd={minUsd}
-                  minUsdt={minUsdt}
+                  minText={minText}
                   usd={usd}
                   amountMsg={amountMsg}
                   canSubmit={canSubmit}
@@ -1140,6 +1322,7 @@ export default function Deposit() {
                   onCancel={() => closeDeposit('manual')}
                   cancelling={cancelling}
                   money={money}
+                  fmtRate={fmtRate}
                   reduce={reduce}
                 />
               </motion.div>
