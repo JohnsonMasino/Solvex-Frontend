@@ -25,6 +25,8 @@ const HIDE_KEY = 'balanceHidden'
 const MASK = '••••••'
 const OTP_LENGTH = 6
 const DEFAULT_EXPIRY_MINUTES = 5 // used only if the API does not say
+const DEFAULT_REFRESH_SECONDS = 30 // used only if the API does not say
+const DEFAULT_FEE_PERCENT = 1.5 // used only if the API does not say
 const RESEND_COOLDOWN_SECONDS = 30 // UI cooldown; the server's 429 value always wins
 const REVIEW_SECONDS = 5 // "processing" screen before redirecting
 const STEPS = ['Details', 'Verify', 'Done']
@@ -77,12 +79,30 @@ function makeMoney(currency) {
   }
 }
 
+// Rates need more precision than balances: $1.0002
+function makeRate(currency) {
+  try {
+    const f = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    })
+    return (v) => f.format(num(v))
+  } catch {
+    return (v) => `$${num(v)}`
+  }
+}
+
 // "500.000000" -> "500", "12.500000" -> "12.5"
 const trimZeros = (v) => {
   const s = String(v ?? '')
   if (!s.includes('.')) return s
   return s.replace(/0+$/, '').replace(/\.$/, '')
 }
+
+// Fee in USD, rounded to 2 decimals (same rule the server documents: usd_amount x fee_percent / 100)
+const feeOf = (usd, pct) => Math.round(usd * pct + 1e-9) / 100
 
 // Keeps only digits and one dot, limited decimals
 function cleanAmount(raw, decimals = 2) {
@@ -100,6 +120,10 @@ function splitLabel(label, fallback) {
   if (m) return { title: m[1] || 'USDT', sub: m[2] }
   return { title: label || fallback.toUpperCase(), sub: '' }
 }
+
+// Withdrawals are USDT only, and a network is usable only when the server enables it and has a live rate
+const isUsdtNetwork = (n) => String(n?.asset || 'usdt').toLowerCase() === 'usdt'
+const isNetworkAvailable = (n) => Boolean(n?.withdrawal_enabled) && num(n?.rate) > 0
 
 // Checks an address against the network's regex from the config endpoint
 function isValidAddress(address, network) {
@@ -152,8 +176,9 @@ const loadError = (err, what) => {
   return `We could not load ${what}.`
 }
 
-// Errors for creating a withdrawal. Returns { message, amount?, address?, action? }
-function describeSubmitError(err) {
+// Errors for creating a withdrawal. Returns { message, amount?, address?, action?, refresh? }
+// ctx = { money, amount } so balance errors can show real numbers.
+function describeSubmitError(err, ctx) {
   const res = err?.response
   if (!res) return { message: 'Network error. Check your connection and try again.' }
 
@@ -162,6 +187,23 @@ function describeSubmitError(err) {
   const serverMsg = typeof data?.message === 'string' ? data.message : ''
 
   if (status === 400) {
+    // The total (amount + fee) does not fit in the available balance
+    if (code === 'insufficient_balance' || code === 'funds_in_use') {
+      const total = num(data?.data?.total_usd)
+      const avail = data?.data?.available_balance
+      if (total > 0 && avail != null && ctx?.money) {
+        const fee = Math.max(0, Math.round((total - num(ctx.amount)) * 100) / 100)
+        return {
+          message: '',
+          amount: `You need ${ctx.money(total)} (amount + ${ctx.money(fee)} fee) but only ${ctx.money(num(avail))} is available.`,
+        }
+      }
+      return { message: serverMsg || 'Your available balance is not enough to cover this withdrawal and its fee.' }
+    }
+    if (code === 'withdrawal_below_minimum') {
+      return { message: '', amount: serverMsg || 'The amount is below the minimum withdrawal.', refresh: true }
+    }
+
     const errors = data?.errors || {}
     const amount = flatten(errors.usd_amount)[0] || ''
     const address = flatten(errors.address)[0] || ''
@@ -186,6 +228,9 @@ function describeSubmitError(err) {
     return { message: serverMsg || 'You do not have access to withdrawals.' }
   }
   if (status === 429) return { message: waitMessage(num(data?.data?.retry_after_seconds)) }
+  if (status === 503) {
+    return { message: 'Rate temporarily unavailable, please try again in a moment.', refresh: true }
+  }
   if (status >= 500) return { message: 'Something went wrong on our side. Please try again in a moment.' }
   return { message: serverMsg || 'We could not create your withdrawal. Please try again.' }
 }
@@ -220,7 +265,7 @@ function describeOtpError(err) {
   }
   if (status === 429) {
     const secs = num(data?.data?.retry_after_seconds)
-    return { kind: 'banner', message: serverMsg && code === 'otp_cooldown' ? waitMessage(secs) : waitMessage(secs), retry: secs }
+    return { kind: 'banner', message: waitMessage(secs), retry: secs }
   }
   if (status >= 500) return { kind: 'banner', message: 'Something went wrong on our side. Please try again in a moment.' }
   return { kind: 'banner', message: serverMsg || 'Something went wrong. Please try again.' }
@@ -300,6 +345,22 @@ function Notice({ tone, children }) {
 
 function Block({ className }) {
   return <div className={`animate-pulse rounded-2xl bg-[#14212D] ${className}`} aria-hidden="true" />
+}
+
+// "Rate updated 12s ago" (ticks every second on its own, so the page does not re-render)
+function RateAge({ ts }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const t = ts ? Date.parse(ts) : NaN
+  if (!Number.isFinite(t)) return null
+  const s = Math.max(0, Math.floor((now - t) / 1000))
+  const text = s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`
+  return <span>Rate updated {text}</span>
 }
 
 function Stepper({ index, reduce }) {
@@ -497,14 +558,16 @@ function BalanceCard({ wallet, loading, error, hidden, onToggle, money, onRetry 
 }
 
 function NetworkOption({ n, selected, onSelect, reduce }) {
+  const available = isNetworkAvailable(n)
   const { title, sub } = splitLabel(n.label, n.value)
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      disabled={!available}
       onClick={onSelect}
-      className={`relative flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 sm:px-3.5 ${
+      className={`relative flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-50 sm:px-3.5 ${
         selected ? 'bg-sky-400/[0.08] ring-2 ring-sky-400' : 'bg-white/[0.04] ring-1 ring-white/10 hover:bg-white/[0.07]'
       }`}
     >
@@ -517,7 +580,9 @@ function NetworkOption({ n, selected, onSelect, reduce }) {
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-medium text-white sm:text-sm">{title}</span>
-        <span className="mt-0.5 block truncate text-[11px] text-slate-400 sm:text-xs">{sub || 'Tether USD'}</span>
+        <span className="mt-0.5 block truncate text-[11px] text-slate-400 sm:text-xs">
+          {available ? sub || 'Tether USD' : 'Temporarily unavailable'}
+        </span>
       </span>
       <span
         className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border transition-colors ${
@@ -547,6 +612,7 @@ function FormStep({
   cfgLoading,
   cfgError,
   onRetryCfg,
+  networks,
   amount,
   setAmount,
   onMax,
@@ -556,7 +622,11 @@ function FormStep({
   setNetwork,
   activeNetwork,
   rate,
+  fmtRate,
   minUsd,
+  feePct,
+  fee,
+  total,
   usdt,
   amountMsg,
   addressMsg,
@@ -568,8 +638,9 @@ function FormStep({
   money,
   reduce,
 }) {
-  const networks = cfg?.networks || []
   const amt = num(amount)
+  const showSummary = amt > 0 && rate > 0
+  const feeLabel = trimZeros(String(feePct))
 
   if (cfgLoading && !cfg) {
     return (
@@ -589,7 +660,7 @@ function FormStep({
       {/* Amount */}
       <section aria-label="Withdrawal amount" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
         <label htmlFor="withdraw-amount" className="block px-0.5 text-[13px] font-semibold text-white sm:text-sm">
-          How much do you want to withdraw?
+          How much do you want to receive?
         </label>
 
         <div
@@ -628,7 +699,7 @@ function FormStep({
           className={`mt-2 px-0.5 text-[11px] sm:text-xs ${amountMsg ? 'text-red-300' : 'text-slate-400'}`}
           aria-live="polite"
         >
-          {amountMsg || `Minimum withdrawal is ${money(minUsd)}.`}
+          {amountMsg || `Minimum withdrawal is ${money(minUsd)}. A ${feeLabel}% fee is added on top.`}
         </p>
       </section>
 
@@ -636,7 +707,7 @@ function FormStep({
       <section aria-label="Network" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
         <p className="px-0.5 text-[13px] font-semibold text-white sm:text-sm">Withdraw to which network?</p>
         <p className="mt-0.5 px-0.5 text-[11px] text-slate-400 sm:text-xs">
-          Your address must be on the same network, or the funds can be lost.
+          Withdrawals are paid in USDT. Your address must be on the same network, or the funds can be lost.
         </p>
 
         {networks.length === 0 ? (
@@ -716,7 +787,7 @@ function FormStep({
 
       {/* Summary */}
       <AnimatePresence initial={false}>
-        {amt > 0 && (
+        {showSummary && (
           <motion.section
             aria-label="Withdrawal summary"
             initial={reduce ? false : { opacity: 0, height: 0 }}
@@ -725,22 +796,37 @@ function FormStep({
             transition={{ duration: 0.25, ease: 'easeOut' }}
             className="overflow-hidden"
           >
-            <dl className="space-y-2.5 rounded-2xl bg-[#14212D] p-4 text-[13px] sm:text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <dt className="text-slate-400">Deducted from balance</dt>
-                <dd className="font-mono font-semibold tabular-nums text-white">{money(amt)}</dd>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <dt className="text-slate-400">Rate</dt>
-                <dd className="font-mono tabular-nums text-slate-200">1 USDT = {money(rate)}</dd>
-              </div>
-              <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
-                <dt className="font-medium text-slate-200">You receive</dt>
-                <dd className="font-mono text-base font-semibold tabular-nums text-sky-300">
-                  {trimZeros(usdt.toFixed(6))} USDT
-                </dd>
-              </div>
-            </dl>
+            <div className="rounded-2xl bg-[#14212D] p-4">
+              <dl className="space-y-2.5 text-[13px] sm:text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-slate-400">You receive (USD)</dt>
+                  <dd className="font-mono font-semibold tabular-nums text-white">{money(amt)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-slate-400">You receive ≈ (estimated)</dt>
+                  <dd className="break-all text-right font-mono tabular-nums text-sky-300">
+                    {trimZeros(usdt.toFixed(6))} USDT
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-slate-400">Fee ({feeLabel}%)</dt>
+                  <dd className="font-mono tabular-nums text-slate-200">{money(fee)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-slate-400">Estimated rate</dt>
+                  <dd className="font-mono tabular-nums text-slate-200">1 USDT = {fmtRate(rate)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
+                  <dt className="font-medium text-slate-200">Total deducted from balance</dt>
+                  <dd className="font-mono text-base font-semibold tabular-nums text-white">{money(total)}</dd>
+                </div>
+              </dl>
+              <p className="mt-3 text-[11px] leading-relaxed text-slate-500 sm:text-xs">
+                <RateAge ts={activeNetwork?.rate_updated_at} />
+                {activeNetwork?.rate_updated_at ? '. ' : ''}
+                Fee and USDT amount are estimates. The final figures are fixed by the server when you continue.
+              </p>
+            </div>
           </motion.section>
         )}
       </AnimatePresence>
@@ -785,6 +871,7 @@ function OtpStep({
   cancelling,
   cooldownMs,
   money,
+  fmtRate,
   reduce,
 }) {
   const expired = left <= 0
@@ -797,6 +884,13 @@ function OtpStep({
   const busy = confirming || resending || cancelling || expired
   const complete = otp.length === OTP_LENGTH
   const coolSecs = Math.ceil(cooldownMs / 1000)
+
+  // Frozen server values. Older withdrawals may have no fee fields.
+  const usdAmount = num(withdrawal.usd_amount)
+  const feeUsd = num(withdrawal.fee_usd)
+  const feePercent = num(withdrawal.fee_percent)
+  const totalUsd = withdrawal.total_usd != null ? num(withdrawal.total_usd) : usdAmount + feeUsd
+  const lockedRate = num(withdrawal.rate)
 
   return (
     <div className="space-y-4 sm:space-y-5">
@@ -828,11 +922,11 @@ function OtpStep({
         </p>
       </section>
 
-      {/* Summary */}
+      {/* Summary (server values, never recomputed) */}
       <section aria-label="Withdrawal details" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
         <div className="rounded-xl bg-[#0E1822] p-3.5 sm:p-4">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">You are withdrawing</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">You will receive</p>
             <span
               className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-bold ${
                 NETWORK_STYLE[withdrawal.network] || NETWORK_FALLBACK
@@ -842,13 +936,36 @@ function OtpStep({
             </span>
           </div>
           <p className="mt-2 break-all font-mono text-2xl font-semibold tabular-nums text-sky-300 sm:text-3xl">
-            {money(num(withdrawal.usd_amount))}
+            {money(usdAmount)}
           </p>
           <p className="mt-1 text-[11px] text-slate-400 sm:text-xs">
-            You receive{' '}
-            <span className="font-medium text-slate-200">{trimZeros(withdrawal.usdt_amount)} USDT</span>
+            ≈ <span className="font-medium text-slate-200">{trimZeros(withdrawal.usdt_amount)} USDT</span> sent to your
+            address
           </p>
         </div>
+
+        <dl className="mt-3 space-y-2.5 rounded-xl bg-[#0E1822] p-3.5 text-[13px] sm:p-4 sm:text-sm">
+          {feeUsd > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-slate-400">Fee{feePercent > 0 ? ` (${trimZeros(String(feePercent))}%)` : ''}</dt>
+              <dd className="font-mono tabular-nums text-slate-200">{money(feeUsd)}</dd>
+            </div>
+          )}
+          {lockedRate > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-slate-400">Rate</dt>
+              <dd className="font-mono tabular-nums text-slate-200">1 USDT = {fmtRate(lockedRate)}</dd>
+            </div>
+          )}
+          <div
+            className={`flex items-center justify-between gap-3 ${
+              feeUsd > 0 || lockedRate > 0 ? 'border-t border-white/[0.06] pt-2.5' : ''
+            }`}
+          >
+            <dt className="font-medium text-slate-200">Total deducted from balance</dt>
+            <dd className="font-mono text-base font-semibold tabular-nums text-white">{money(totalUsd)}</dd>
+          </div>
+        </dl>
 
         <div className="mt-3 rounded-xl bg-[#0E1822] p-3.5 sm:p-4">
           <p className="text-[11px] font-medium uppercase tracking-wider text-slate-400">Sending to ({netLabel})</p>
@@ -859,6 +976,10 @@ function OtpStep({
 
         <p className="mt-3 px-0.5 text-[11px] text-slate-500 sm:text-xs">
           Reference <span className="font-mono text-slate-300">{withdrawal.reference}</span>
+        </p>
+        <p className="mt-1.5 px-0.5 text-[11px] leading-relaxed text-slate-400 sm:text-xs">
+          By confirming, <span className="font-medium text-slate-200">{money(totalUsd)}</span> will be reserved from your
+          balance. These figures are fixed and will not change.
         </p>
       </section>
 
@@ -951,7 +1072,8 @@ function OtpStep({
    STEP 3: PROCESSING
 ──────────────────────────────────────────────── */
 
-function ReviewStep({ withdrawal, secs, reduce }) {
+function ReviewStep({ withdrawal, secs, money, reduce }) {
+  const total = withdrawal?.total_usd != null ? num(withdrawal.total_usd) : 0
   return (
     <section
       aria-label="Withdrawal submitted"
@@ -984,8 +1106,9 @@ function ReviewStep({ withdrawal, secs, reduce }) {
 
       <h2 className="mt-6 text-base font-semibold text-white sm:text-lg">Your withdrawal is being processed</h2>
       <p className="mx-auto mt-2 max-w-sm text-[13px] leading-relaxed text-slate-400 sm:text-sm">
-        Your request{withdrawal?.reference ? ` (${withdrawal.reference})` : ''} has been confirmed. It will be processed
-        and completed shortly, and the funds will be sent to your wallet.
+        Your request{withdrawal?.reference ? ` (${withdrawal.reference})` : ''} has been confirmed
+        {total > 0 ? ` and ${money(total)} has been reserved from your balance` : ''}. It will be processed and completed
+        shortly, and the funds will be sent to your wallet.
       </p>
 
       <div className="mx-auto mt-6 h-1.5 max-w-xs overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
@@ -1051,6 +1174,7 @@ export default function Withdrawal() {
   const alive = useRef(true)
   const closing = useRef(false)
   const confirmingRef = useRef(false)
+  const cfgBusy = useRef(false)
 
   useEffect(() => {
     alive.current = true
@@ -1095,6 +1219,42 @@ export default function Withdrawal() {
     }
   }, [attempt])
 
+  // Silent refresh of the config (live rate, fee). Errors are ignored, the last good values stay on screen.
+  const refreshConfig = useCallback(() => {
+    if (cfgBusy.current) return
+    cfgBusy.current = true
+    api
+      .get('/api/wallet/config/')
+      .then((res) => {
+        if (!alive.current) return
+        const data = res.data?.data
+        if (data && typeof data === 'object') setCfg(data)
+      })
+      .catch(() => {})
+      .finally(() => {
+        cfgBusy.current = false
+      })
+  }, [])
+
+  const hasCfg = Boolean(cfg)
+  const refreshMs = Math.max(5, num(cfg?.rate_refresh_seconds) || DEFAULT_REFRESH_SECONDS) * 1000
+
+  // Re-fetch the rate every rate_refresh_seconds while the form is visible. Paused when the tab is hidden.
+  useEffect(() => {
+    if (phase !== 'form' || !hasCfg) return undefined
+
+    const tick = () => {
+      if (!document.hidden) refreshConfig()
+    }
+    const id = setInterval(tick, refreshMs)
+    document.addEventListener('visibilitychange', tick)
+
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [phase, hasCfg, refreshMs, refreshConfig])
+
   const retryLoad = () => {
     setWalletErr('')
     setCfgErr('')
@@ -1117,18 +1277,26 @@ export default function Withdrawal() {
 
   const currency = wallet?.currency || cfg?.currency || 'USD'
   const money = useMemo(() => makeMoney(currency), [currency])
+  const fmtRate = useMemo(() => makeRate(currency), [currency])
 
-  const rate = num(cfg?.rate) || 1
   const minUsd = num(cfg?.min_withdrawal_usd)
+  const feePct = cfg?.withdrawal_fee_percent != null ? num(cfg.withdrawal_fee_percent) : DEFAULT_FEE_PERCENT
   const expiryMinutes = num(cfg?.withdrawal_request_expiry_minutes) || DEFAULT_EXPIRY_MINUTES
-  const networks = useMemo(() => cfg?.networks || [], [cfg])
-  const activeNetwork = networks.find((n) => n.value === network) || networks[0] || null
+
+  // Only USDT networks are shown (BTC / ETH cannot be withdrawn). Unavailable ones are disabled.
+  const networks = useMemo(() => (cfg?.networks || []).filter(isUsdtNetwork), [cfg])
+  const activeNetwork =
+    networks.find((n) => n.value === network && isNetworkAvailable(n)) || networks.find((n) => isNetworkAvailable(n)) || null
+  const rate = num(activeNetwork?.rate)
 
   const available = num(wallet?.available_balance)
   const amt = num(amount)
-  const usdt = amt / rate
+  const fee = feeOf(amt, feePct) // estimate
+  const total = Math.round((amt + fee) * 100) / 100 // estimate
+  const usdt = rate > 0 ? amt / rate : 0 // estimate
+
   const belowMin = amt > 0 && amt + 1e-9 < minUsd
-  const exceeds = amt > 0 && Boolean(wallet) && amt - available > 1e-9
+  const exceeds = amt > 0 && Boolean(wallet) && total - available > 1e-9
   const trimmedAddress = address.trim()
   const addressOk = isValidAddress(trimmedAddress, activeNetwork)
   const addressBad = trimmedAddress.length > 0 && !addressOk
@@ -1138,11 +1306,11 @@ export default function Withdrawal() {
     (belowMin
       ? `The minimum withdrawal is ${money(minUsd)}.`
       : exceeds
-        ? `That is more than your available balance of ${money(available)}.`
+        ? `You need ${money(total)} (amount + ${money(fee)} fee) but only ${money(available)} is available.`
         : '')
   const addressMsg =
     addressErr || (addressBad ? `Enter a valid ${activeNetwork ? activeNetwork.value.toUpperCase() : ''} address.` : '')
-  const canSubmit = !submitting && amt > 0 && !belowMin && !exceeds && addressOk && Boolean(activeNetwork)
+  const canSubmit = !submitting && amt > 0 && !belowMin && !exceeds && addressOk && Boolean(activeNetwork) && rate > 0
 
   const onAmountChange = (v) => {
     setAmount(v)
@@ -1162,9 +1330,14 @@ export default function Withdrawal() {
     setFormError(null)
   }
 
+  // Largest amount the user can receive once the fee is added on top
   const onMax = () => {
     if (!wallet) return
-    onAmountChange(trimZeros((Math.floor(available * 100) / 100).toFixed(2)))
+    const availC = Math.floor(available * 100 + 1e-6)
+    const feeC = (c) => Math.round((c * feePct) / 100)
+    let c = Math.floor(availC / (1 + feePct / 100))
+    while (c > 0 && c + feeC(c) > availC) c -= 1
+    onAmountChange(c > 0 ? trimZeros((c / 100).toFixed(2)) : '')
   }
 
   const onPaste = async () => {
@@ -1212,43 +1385,49 @@ export default function Withdrawal() {
       setPhase('otp')
     } catch (err) {
       if (!alive.current) return
-      const info = describeSubmitError(err)
+      const info = describeSubmitError(err, { money, amount: amt })
       if (info.amount) setAmountErr(info.amount)
       if (info.address) setAddressErr(info.address)
       if (info.message) setFormError({ message: info.message, action: info.action })
+      if (info.refresh) refreshConfig()
     } finally {
       if (alive.current) setSubmitting(false)
     }
   }
 
   // Back to a fresh form (after cancel, expiry or a dead request)
-  const resetToForm = useCallback((nextNotice) => {
-    setWithdrawal(null)
-    setEndAt(null)
-    setResendAt(null)
-    setAmount('')
-    setAddress('')
-    setAmountErr('')
-    setAddressErr('')
-    setFormError(null)
-    setOtp('')
-    setOtpErr('')
-    setOtpBanner('')
-    setOtpNote('')
-    setCancelling(false)
-    setConfirming(false)
-    setResending(false)
-    setNotice(nextNotice)
-    closing.current = false
-    confirmingRef.current = false
-    setPhase('form')
-    api
-      .get('/api/wallet/')
-      .then((res) => {
-        if (alive.current) setWallet(res.data?.data ?? null)
-      })
-      .catch(() => {})
-  }, [])
+  const resetToForm = useCallback(
+    (nextNotice) => {
+      setWithdrawal(null)
+      setEndAt(null)
+      setResendAt(null)
+      setAmount('')
+      setAddress('')
+      setAmountErr('')
+      setAddressErr('')
+      setFormError(null)
+      setOtp('')
+      setOtpErr('')
+      setOtpBanner('')
+      setOtpNote('')
+      setCancelling(false)
+      setConfirming(false)
+      setResending(false)
+      setNotice(nextNotice)
+      closing.current = false
+      confirmingRef.current = false
+      setPhase('form')
+      // Refresh the balance and the live rate for the fresh start
+      refreshConfig()
+      api
+        .get('/api/wallet/')
+        .then((res) => {
+          if (alive.current) setWallet(res.data?.data ?? null)
+        })
+        .catch(() => {})
+    },
+    [refreshConfig],
+  )
 
   // The request went through; show the 5 second processing screen, then leave
   const goReview = useCallback(() => {
@@ -1433,17 +1612,21 @@ export default function Withdrawal() {
                   cfgLoading={cfgLoading}
                   cfgError={cfgErr}
                   onRetryCfg={retryLoad}
+                  networks={networks}
                   amount={amount}
                   setAmount={onAmountChange}
                   onMax={onMax}
                   address={address}
                   setAddress={onAddressChange}
                   onPaste={onPaste}
-                  network={network}
                   setNetwork={onNetworkChange}
                   activeNetwork={activeNetwork}
                   rate={rate}
+                  fmtRate={fmtRate}
                   minUsd={minUsd}
+                  feePct={feePct}
+                  fee={fee}
+                  total={total}
                   usdt={usdt}
                   amountMsg={amountMsg}
                   addressMsg={addressMsg}
@@ -1481,6 +1664,7 @@ export default function Withdrawal() {
                   cancelling={cancelling}
                   cooldownMs={cooldownMs}
                   money={money}
+                  fmtRate={fmtRate}
                   reduce={reduce}
                 />
               </motion.div>
@@ -1488,7 +1672,7 @@ export default function Withdrawal() {
 
             {phase === 'review' && (
               <motion.div key="review" variants={stepVariants} initial="initial" animate="animate" exit="exit">
-                <ReviewStep withdrawal={withdrawal} secs={secs} reduce={reduce} />
+                <ReviewStep withdrawal={withdrawal} secs={secs} money={money} reduce={reduce} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -1498,7 +1682,8 @@ export default function Withdrawal() {
         {phase === 'form' && cfg && (
           <motion.p variants={item} className="flex items-start gap-2 px-1 text-[11px] leading-relaxed text-slate-500 sm:text-xs">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            We email you a code to confirm each withdrawal. Funds are reserved only after you confirm it.
+            A {trimZeros(String(feePct))}% fee is added on top of the amount you receive. We email you a code to confirm
+            each withdrawal, and funds are reserved only after you confirm it.
           </motion.p>
         )}
       </motion.div>

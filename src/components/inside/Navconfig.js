@@ -1,11 +1,12 @@
 // src/components/Inside/Navconfig.js
-import { Download, LayoutDashboard, Settings, TrendingUp, Upload, Users, History } from 'lucide-react'
+import { Download, Landmark, LayoutDashboard, Settings, TrendingUp, Upload, Users, History } from 'lucide-react'
 
 export const NAV_ITEMS = [
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard, end: true },
   { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
   { label: 'Deposit', to: '/dashboard/deposit', icon: Download },
   { label: 'Withdraw', to: '/dashboard/withdraw', icon: Upload },
+  { label: 'Loan', to: '/dashboard/loan', icon: Landmark },
   { label: 'Transactions', to: '/dashboard/transactions', icon: History },
   { label: 'Referrals', to: '/dashboard/referrals', icon: Users },
 ]

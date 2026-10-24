@@ -26,7 +26,7 @@ function ProfileIcon() {
 }
 
 const iconBtn =
-  'grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-slate-300 transition-colors hover:border-white/25 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70'
+  'grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-slate-300 transition-colors hover:border-white/25 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:h-9 lg:w-9 xl:h-10 xl:w-10'
 
 export default function DashboardLayout({ children }) {
   const reduce = useReducedMotion()
@@ -122,15 +122,17 @@ export default function DashboardLayout({ children }) {
   }
 
   const firstName = user ? firstNameOf(user) : ''
+
+  // Desktop links: compact on lg, a little roomier on xl and wider
   const desktopLink = (isActive) =>
-    `inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 ${
+    `inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:gap-2 xl:px-3 xl:py-2 xl:text-sm ${
       isActive ? 'bg-white/[0.08] text-white' : 'text-slate-400 hover:bg-white/[0.04] hover:text-white'
     }`
 
   return (
     <div className="min-h-screen bg-[#0E1822] text-slate-300">
       <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0E1822]/90 backdrop-blur">
-        <div className="mx-auto grid h-14 max-w-7xl grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 sm:px-6 lg:h-16 lg:grid-cols-[auto_1fr_auto] lg:gap-6 lg:px-8">
+        <div className="mx-auto grid h-14 max-w-7xl grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 sm:px-6 lg:h-16 lg:grid-cols-[auto_1fr_auto] lg:gap-3 lg:px-6 xl:gap-6 xl:px-8">
           {/* Left: hamburger on mobile, logo on desktop */}
           <div className="flex items-center">
             <button
@@ -148,10 +150,10 @@ export default function DashboardLayout({ children }) {
               aria-label="Solvexmarketinc dashboard"
               className="hidden items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:flex"
             >
-              <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#14212D] ring-1 ring-white/10">
-                <img src="/Logo_nbg.png" alt="" className="h-7 w-7 object-contain" draggable="false" />
+              <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#14212D] ring-1 ring-white/10 xl:h-10 xl:w-10">
+                <img src="/Logo_nbg.png" alt="" className="h-6 w-6 object-contain xl:h-7 xl:w-7" draggable="false" />
               </span>
-              <span className="hidden text-base font-semibold tracking-tight text-white xl:block">
+              <span className="hidden text-base font-semibold tracking-tight text-white 2xl:block">
                 SOLVE<span className="text-[#FF4D4F]">X</span>
                 <span className="text-[#3DDC97]">MARKETINC</span>
               </span>
@@ -178,14 +180,17 @@ export default function DashboardLayout({ children }) {
               )}
             </div>
 
-            <nav aria-label="Dashboard" className="hidden items-center gap-1 lg:flex">
+            <nav aria-label="Dashboard" className="hidden items-center gap-0.5 lg:flex xl:gap-1">
               {NAV_ITEMS.map((item) => {
                 const Icon = item.icon
                 return (
                   <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => desktopLink(isActive)}>
                     {({ isActive }) => (
                       <>
-                        <Icon className={`h-4 w-4 ${isActive ? 'text-[#3DDC97]' : ''}`} aria-hidden="true" />
+                        <Icon
+                          className={`h-3.5 w-3.5 shrink-0 xl:h-4 xl:w-4 ${isActive ? 'text-[#3DDC97]' : ''}`}
+                          aria-hidden="true"
+                        />
                         {item.label}
                       </>
                     )}
@@ -205,23 +210,23 @@ export default function DashboardLayout({ children }) {
               <ProfileIcon />
             </Link>
 
-            <div className="hidden items-center gap-2 lg:flex">
+            <div className="hidden items-center gap-1.5 lg:flex xl:gap-2">
               <Link
                 to={PROFILE_URL}
-                className="flex items-center gap-2.5 rounded-xl border border-white/10 py-1 pl-1 pr-3 transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70"
+                className="flex items-center gap-2 rounded-xl border border-white/10 py-1 pl-1 pr-2 transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:gap-2.5 xl:pr-3"
               >
-                <span className="h-8 w-8 shrink-0 overflow-hidden rounded-full ring-1 ring-white/10">
+                <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full ring-1 ring-white/10 xl:h-8 xl:w-8">
                   <ProfileIcon />
                 </span>
                 {user ? (
                   <span className="min-w-0 text-left">
-                    <span className="block max-w-[9rem] truncate text-sm font-medium leading-tight text-white">
+                    <span className="block max-w-[6rem] truncate text-[13px] font-medium leading-tight text-white xl:max-w-[9rem] xl:text-sm">
                       {firstName}
                     </span>
                     <TierBadge tier={user.tier} small />
                   </span>
                 ) : (
-                  <span className="text-sm font-medium text-white">{loading ? '' : 'My account'}</span>
+                  <span className="text-[13px] font-medium text-white xl:text-sm">{loading ? '' : 'My account'}</span>
                 )}
               </Link>
 
@@ -231,7 +236,7 @@ export default function DashboardLayout({ children }) {
                 title="Settings"
                 className={({ isActive }) => `${iconBtn} ${isActive ? 'border-white/25 bg-white/[0.08] text-white' : ''}`}
               >
-                <Settings className="h-[18px] w-[18px]" aria-hidden="true" />
+                <Settings className="h-4 w-4 xl:h-[18px] xl:w-[18px]" aria-hidden="true" />
               </NavLink>
 
               <button
@@ -241,7 +246,7 @@ export default function DashboardLayout({ children }) {
                 title="Log out"
                 className={`${iconBtn} hover:border-rose-400/40 hover:text-rose-300`}
               >
-                <LogOut className="h-[18px] w-[18px]" aria-hidden="true" />
+                <LogOut className="h-4 w-4 xl:h-[18px] xl:w-[18px]" aria-hidden="true" />
               </button>
             </div>
           </div>
