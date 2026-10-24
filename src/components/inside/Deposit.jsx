@@ -4,7 +4,6 @@ import { Link, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
-  ArrowLeft,
   ArrowRight,
   Check,
   CheckCircle2,
@@ -14,7 +13,6 @@ import {
   EyeOff,
   Info,
   Loader2,
-  RefreshCw,
   Wallet,
 } from 'lucide-react'
 import api from '../../components/Api'
@@ -60,9 +58,6 @@ const ghostBtn =
 
 const primaryBtn =
   'inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[#3DDC97] px-5 text-[13px] font-semibold text-[#06140E] transition-colors hover:bg-[#5BEBAD] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm'
-
-const iconBtn =
-  'grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/[0.06] text-slate-300 transition-colors hover:bg-white/[0.1] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-60'
 
 /* ────────────────────────────────────────────────
    HELPERS
@@ -1077,55 +1072,6 @@ export default function Deposit() {
         initial={reduce ? false : 'hidden'}
         animate="show"
       >
-        {/* Back + header */}
-        <motion.div variants={item} className="space-y-3">
-          <AnimatePresence initial={false}>
-            {phase === 'form' && (
-              <motion.div
-                key="back"
-                initial={reduce ? false : { opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.2 }}
-                className="overflow-hidden"
-              >
-                <Link
-                  to="/dashboard"
-                  className="group inline-flex h-10 items-center gap-2 rounded-xl bg-white/[0.06] pl-3 pr-4 text-[13px] font-medium text-slate-200 transition-colors hover:bg-white/[0.1] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 sm:text-sm"
-                >
-                  <ArrowLeft
-                    className="h-4 w-4 transition-transform group-hover:-translate-x-0.5"
-                    aria-hidden="true"
-                  />
-                  Back to dashboard
-                </Link>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="text-lg font-semibold text-white sm:text-xl">Deposit</h1>
-              <p className="mt-0.5 text-[13px] text-slate-400 sm:text-sm">
-                Fund your wallet with USDT. We credit the USD value after review.
-              </p>
-            </div>
-            {phase === 'form' && (
-              <button
-                type="button"
-                onClick={retryLoad}
-                disabled={walletLoading || cfgLoading}
-                aria-label="Refresh balance and settings"
-                className={iconBtn}
-              >
-                <RefreshCw
-                  className={`h-[18px] w-[18px] ${walletLoading || cfgLoading ? 'animate-spin' : ''}`}
-                  aria-hidden="true"
-                />
-              </button>
-            )}
-          </div>
-        </motion.div>
 
         {/* Progress */}
         <motion.div variants={item} className="rounded-2xl bg-[#14212D] px-3.5 py-3 sm:px-5 sm:py-3.5">

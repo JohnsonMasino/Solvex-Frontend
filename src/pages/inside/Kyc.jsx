@@ -1129,7 +1129,7 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
                 type="tel"
                 inputMode="tel"
                 autoComplete="tel"
-                placeholder="+234 801 234 5678"
+                placeholder="+1 (202) 555-0147"
                 hint="Include the country code."
               />
             </div>
