@@ -54,7 +54,15 @@ function storeRef(value) {
   }
 }
 
-// Turns any axios error into { message, code, status, fields }
+function clearStoredRef() {
+  try {
+    sessionStorage.removeItem(REF_KEY)
+  } catch {
+    /* storage unavailable, ignore */
+  }
+}
+
+// Turns any axios error into { message, code, status, fields, data }
 function parseError(err) {
   const res = err?.response
   if (!res) {
@@ -66,6 +74,7 @@ function parseError(err) {
       code: 'network',
       status: 0,
       fields: {},
+      data: null,
     }
   }
   const d = typeof res.data === 'object' && res.data ? res.data : {}
@@ -80,6 +89,7 @@ function parseError(err) {
     code: d.code || '',
     status: res.status,
     fields,
+    data: d.data && typeof d.data === 'object' ? d.data : null,
   }
 }
 
@@ -99,6 +109,12 @@ function validate(f) {
 }
 
 const formatClock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+
+// Nothing checked yet for the referral field
+const REF_IDLE = { code: '', status: 'idle', name: '', message: '' }
+
+const REF_UNAVAILABLE =
+  'We could not check your referral code right now. Try again, or continue without a code.'
 
 /* ────────────────────────────────────────────────
    SMALL UI PIECES
@@ -334,6 +350,9 @@ export default function Signup() {
   const [referralEdit, setReferralEdit] = useState(null)
   const [storedRef] = useState(readStoredRef)
   const referralCode = referralEdit ?? (refFromLink || storedRef)
+  // Result of the last referral check. It only counts while it matches the code in the field.
+  const [refCheck, setRefCheck] = useState(REF_IDLE)
+  const [refChecking, setRefChecking] = useState(false)
   const [errors, setErrors] = useState({})
   const [formError, setFormError] = useState('')
   const [showPw, setShowPw] = useState(false)
@@ -354,12 +373,27 @@ export default function Signup() {
   // Every register/resend call issues a NEW code and kills the previous one,
   // so we make sure two requests can never run at the same time.
   const busy = useRef({ register: false, verify: false, resend: false })
+  // Counts referral checks so a slow, older answer can never overwrite a newer one
+  const refReq = useRef(0)
 
   const email = form.email.trim().toLowerCase()
   const code = digits.join('')
   const cooling = cooldown > 0
   const stepIndex = step === 'form' ? 0 : step === 'otp' ? 1 : 2
   const refApplied = Boolean(refFromLink) && referralCode === refFromLink
+
+  // What the referral field shows, worked out from the last check
+  const refMatches = refCheck.code === referralCode
+  const refValid = Boolean(referralCode) && refMatches && refCheck.status === 'valid'
+  const refMessage = referralCode && refMatches && refCheck.status !== 'valid' ? refCheck.message : ''
+  const refError = errors.referral_code || refMessage
+  const refHint = refValid
+    ? refCheck.name
+      ? `Code applied. You were invited by ${refCheck.name}.`
+      : 'Referral code applied.'
+    : refApplied
+      ? 'Applied from your invite link. You can change or clear it.'
+      : undefined
 
   // Remember the invite-link code for this session (no state is set here)
   useEffect(() => {
@@ -404,6 +438,91 @@ export default function Signup() {
 
   const goToLogin = () => navigate('/login', { replace: true, state: { verified: true, email } })
 
+  const focusReferral = () => {
+    // Wait a beat so the field is enabled again after the submit finishes
+    setTimeout(() => {
+      const el = document.getElementById('referral_code')
+      if (!el) return
+      el.focus()
+      el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' })
+    }, 80)
+  }
+
+  /* ── Referral code check ── */
+  // Always resolves to { code, status: 'valid' | 'invalid' | 'error', name, message }
+  const checkReferral = async (value) => {
+    const id = ++refReq.current
+    setRefChecking(true)
+    let result
+    try {
+      const res = await api.get('/api/referrals/validate/', { params: { code: value }, skipAuth: true })
+      const data = res.data?.data
+      result =
+        data && data.valid === false
+          ? { code: value, status: 'invalid', name: '', message: 'This referral code is not valid.' }
+          : { code: value, status: 'valid', name: data?.referrer_name || '', message: '' }
+    } catch (err) {
+      const { message, code: errCode, status, fields, data } = parseError(err)
+      if (status === 404 || errCode === 'invalid_referral_code') {
+        result = {
+          code: value,
+          status: 'invalid',
+          name: '',
+          message: message || 'This referral code is not valid.',
+        }
+      } else if (status === 400) {
+        result = {
+          code: value,
+          status: 'invalid',
+          name: '',
+          message: fields.code || 'Enter a valid referral code, or clear the field to continue without one.',
+        }
+      } else if (status === 429) {
+        const wait = Number(data?.retry_after_seconds)
+        result = {
+          code: value,
+          status: 'error',
+          name: '',
+          message:
+            Number.isFinite(wait) && wait > 0
+              ? `Too many attempts. Try again in ${Math.ceil(wait)} seconds, or continue without a code.`
+              : 'Too many attempts. Please wait a moment and try again, or continue without a code.',
+        }
+      } else {
+        result = { code: value, status: 'error', name: '', message: REF_UNAVAILABLE }
+      }
+    } finally {
+      if (id === refReq.current) setRefChecking(false)
+    }
+    if (id === refReq.current) {
+      setRefCheck(result)
+      // A code that does not exist should not follow the person to their next visit
+      if (result.status === 'invalid' && value === storedRef) clearStoredRef()
+    }
+    return result
+  }
+
+  // Early feedback when the person leaves the field
+  const handleRefBlur = () => {
+    if (!referralCode || submitting || refChecking || busy.current.register) return
+    if (refCheck.code === referralCode && refCheck.status !== 'error') return
+    checkReferral(referralCode)
+  }
+
+  const skipReferral = () => {
+    refReq.current += 1
+    setRefChecking(false)
+    setReferralEdit('')
+    setRefCheck(REF_IDLE)
+    setErrors((prev) => {
+      if (!prev.referral_code) return prev
+      const next = { ...prev }
+      delete next.referral_code
+      return next
+    })
+    clearStoredRef()
+  }
+
   /* ── Step 1: create account ── */
   const handleRegister = async (e) => {
     e.preventDefault()
@@ -417,6 +536,17 @@ export default function Signup() {
     busy.current.register = true
     setSubmitting(true)
     try {
+      // 1. Check the referral code first. Only a valid code lets registration go on.
+      if (referralCode) {
+        const known = refCheck.code === referralCode && refCheck.status === 'valid' ? refCheck : null
+        const result = known || (await checkReferral(referralCode))
+        if (result.status !== 'valid') {
+          focusReferral()
+          return
+        }
+      }
+
+      // 2. Create the account
       const payload = {
         full_name: form.full_name.trim(),
         email,
@@ -443,6 +573,11 @@ export default function Signup() {
         else extra.push(msg)
       })
       setErrors(known)
+      // The server can still reject the code at registration time: treat it like a failed check
+      if (known.referral_code) {
+        setRefCheck({ code: referralCode, status: 'invalid', name: '', message: known.referral_code })
+        focusReferral()
+      }
       // Show the general message unless the field errors already explain it
       setFormError(extra.length ? extra.join(' ') : Object.keys(known).length ? '' : message)
     } finally {
@@ -679,27 +814,47 @@ export default function Signup() {
                       disabled={submitting}
                     />
 
-                    <Field
-                      id="referral_code"
-                      label="Referral code"
-                      optional
-                      icon={Gift}
-                      type="text"
-                      autoComplete="off"
-                      autoCapitalize="characters"
-                      spellCheck={false}
-                      placeholder="e.g. A8K2QZ7M"
-                      value={referralCode}
-                      onChange={(e) => setField('referral_code', cleanRef(e.target.value))}
-                      error={errors.referral_code}
-                      hint={refApplied ? 'Applied from your invite link. You can change or clear it.' : undefined}
-                      disabled={submitting}
-                      right={
-                        refApplied && !errors.referral_code ? (
-                          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#3DDC97]" aria-label="Applied from invite link" />
-                        ) : null
-                      }
-                    />
+                    <div>
+                      <Field
+                        id="referral_code"
+                        label="Referral code"
+                        optional
+                        icon={Gift}
+                        type="text"
+                        autoComplete="off"
+                        autoCapitalize="characters"
+                        spellCheck={false}
+                        placeholder="e.g. A8K2QZ7M"
+                        value={referralCode}
+                        onChange={(e) => setField('referral_code', cleanRef(e.target.value))}
+                        onBlur={handleRefBlur}
+                        error={refError}
+                        hint={refHint}
+                        disabled={submitting}
+                        right={
+                          refChecking ? (
+                            <Loader2
+                              className="h-4 w-4 shrink-0 animate-spin text-slate-400"
+                              aria-label="Checking referral code"
+                            />
+                          ) : refValid || (refApplied && !refError && refCheck.status === 'idle') ? (
+                            <CheckCircle2
+                              className="h-4 w-4 shrink-0 text-[#3DDC97]"
+                              aria-label={refValid ? 'Referral code is valid' : 'Applied from invite link'}
+                            />
+                          ) : null
+                        }
+                      />
+                      {referralCode && refError && !submitting && (
+                        <button
+                          type="button"
+                          onClick={skipReferral}
+                          className="mt-1.5 text-xs font-medium text-[#3DDC97] hover:underline focus:outline-none focus-visible:underline"
+                        >
+                          Continue without a code
+                        </button>
+                      )}
+                    </div>
 
                     <button
                       type="submit"
@@ -709,7 +864,7 @@ export default function Signup() {
                       {submitting ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                          Creating account…
+                          {refChecking ? 'Checking referral code…' : 'Creating account…'}
                         </>
                       ) : (
                         <>
