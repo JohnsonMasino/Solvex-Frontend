@@ -620,7 +620,6 @@ function ActiveTrade({ t, tick, now, reduce }) {
 
 // Shown only when every live feed fails, so the section is never empty or broken.
 const TIPS = [
-  ['Size every trade for the stop, not the hope', 'Decide what you can lose first, then pick the margin. Risking 1-2% of your balance per trade keeps one bad call from ending your week.', 'Risk'],
   ['Leverage multiplies losses as fast as gains', 'At 10x, a 5% move against you is a 50% hit to your margin. Start low until your strategy proves itself.', 'Leverage'],
   ['Check the economic calendar before forex entries', 'Rate decisions, CPI and jobs data can move pairs by dozens of pips in minutes. Avoid opening right before them.', 'Forex'],
   ['Trade with the higher-timeframe trend', 'Confirm direction on the 4H or daily chart, then time the entry on the 15m or 1H. Counter-trend trades need a clear reason.', 'Analysis'],
