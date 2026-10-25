@@ -270,7 +270,6 @@ function TVChart({ symbol }) {
     loadTV().then(() => {
       if (!live || !host.current) return
       host.current.innerHTML = '<div id="tv_chart_host" style="height:100%;width:100%"></div>'
-      // eslint-disable-next-line no-new
       new window.TradingView.widget({
         container_id: 'tv_chart_host', symbol, interval: '60', timezone: 'Etc/UTC', theme: 'dark', style: '1', locale: 'en',
         autosize: true, allow_symbol_change: false, hide_side_toolbar: false, withdateranges: true, details: false,
