@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion } from 'framer-motion'
 import {
-  AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Clock, ExternalLink, History, Lightbulb, Loader2, Newspaper, Plus,
+  AlertCircle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Clock, ExternalLink, History, Lightbulb, Loader2, Newspaper, Plus,
   RefreshCw, Search, Share2, TrendingDown, TrendingUp, Wallet, X,
 } from 'lucide-react'
 import api from '../../components/Api'
@@ -15,6 +15,8 @@ const DASHBOARD_ROUTE = '/dashboard'
 const TV_SRC = 'https://s3.tradingview.com/tv.js'
 // Set to false if your backend CORS config does not yet allow the Idempotency-Key header
 const SEND_IDEMPOTENCY_KEY = true
+// How often the active trades list is refreshed (settled trades leave the list once staff settle them)
+const ACTIVE_POLL_MS = 15000
 // Public RSS feeds. Each one is tried through rss2json first, then through a CORS proxy (no API keys).
 const NEWS_FEEDS = [
   ['Cointelegraph', 'https://cointelegraph.com/rss'],
@@ -25,6 +27,7 @@ const NEWS_FEEDS = [
 const FX_URL = 'https://open.er-api.com/v6/latest/USD'
 const GREEN = '#3DDC97'
 const RED = '#F6465D'
+const AMBER = '#FBBF24'
 
 const CRYPTO = ('BTC ETH BNB SOL XRP ADA DOGE TRX TON AVAX LINK DOT MATIC SHIB LTC BCH ATOM UNI XLM ETC FIL APT ARB OP NEAR ' +
   'ICP HBAR VET INJ SUI SEI AAVE MKR RUNE ALGO FTM SAND MANA AXS GRT PEPE WIF FET RNDR STX IMX TIA').split(' ')
@@ -47,6 +50,8 @@ const iconBtn =
   'grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/[0.08] text-slate-200 transition-colors hover:bg-white/[0.14] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70'
 const fieldCls =
   'w-full rounded-xl bg-[#0E1822] px-3.5 py-3 font-mono text-[15px] text-white ring-1 ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#3DDC97]/70'
+
+const WEEKEND_MSG = 'Trading is closed for the weekend. You can open new trades again from Monday. Your open trades stay open until they are settled.'
 
 /* ───────────── HELPERS ───────────── */
 
@@ -100,7 +105,8 @@ function describeError(err, fallback) {
   if (status === 403) {
     if (data?.code === 'kyc_required') return { message: msg || 'Complete identity verification (KYC) before trading.', action: { to: '/dashboard/kyc', label: 'Verify identity' } }
     if (data?.code === 'trade_limit_reached') return { message: msg || 'You reached your open trade limit.', action: { to: '/dashboard/deposit', label: 'Top up balance' } }
-    return { message: msg || 'Trading is not available right now (the market may be closed).' }
+    if (data?.code === 'market_closed') return { message: WEEKEND_MSG }
+    return { message: msg || 'Trading is not available right now.' }
   }
   if (status === 429) return { message: 'Too many requests. Please wait a moment and try again.' }
   if (status >= 500) return { message: 'Something went wrong on our side. Please try again in a moment.' }
@@ -264,7 +270,6 @@ function TVChart({ symbol }) {
     loadTV().then(() => {
       if (!live || !host.current) return
       host.current.innerHTML = '<div id="tv_chart_host" style="height:100%;width:100%"></div>'
-      // eslint-disable-next-line no-new
       new window.TradingView.widget({
         container_id: 'tv_chart_host', symbol, interval: '60', timezone: 'Etc/UTC', theme: 'dark', style: '1', locale: 'en',
         autosize: true, allow_symbol_change: false, hide_side_toolbar: false, withdateranges: true, details: false,
@@ -350,11 +355,12 @@ function TradeForm({ cfg, summary, initialPair, onClose, onOpened }) {
   const avail = num(summary?.available_balance)
   const amt = num(amount)
   const bad = amt < minAmt ? `Minimum amount is ${money(minAmt)}.` : summary && amt > avail ? `More than your available ${money(avail)}.` : ''
-  const marketClosed = cfg && cfg.market_open === false && BY_PAIR[pair].type === 'forex'
+  // The backend blocks ALL new trades (crypto and forex) at the weekend.
+  const marketClosed = cfg?.market_open === false
 
   const submit = async (e) => {
     e.preventDefault()
-    if (busy || bad) return
+    if (busy || bad || marketClosed) return
     setBusy(true); setErr(null)
     try {
       const body = { pair, side, amount: amt.toFixed(2), leverage: lev, duration_hours: dur }
@@ -433,14 +439,14 @@ function TradeForm({ cfg, summary, initialPair, onClose, onOpened }) {
         <div className="flex justify-between"><dt className="text-slate-400">Position size</dt><dd className="font-mono text-white">{money(amt * lev)}</dd></div>
         <div className="flex justify-between"><dt className="text-slate-400">Margin locked</dt><dd className="font-mono text-white">{money(amt)}</dd></div>
       </dl>
-      <p className="px-0.5 text-[11px] text-slate-500">TP/SL and leverage are informational. The trade closes automatically when the duration ends.</p>
+      <p className="px-0.5 text-[11px] text-slate-500">TP/SL and leverage are informational. Your result is confirmed shortly after the trade duration ends, and your margin stays locked until then.</p>
 
-      {marketClosed && <InlineError message="The forex market is closed right now. Try a crypto pair or come back when it opens." />}
+      {marketClosed && <InlineError message={WEEKEND_MSG} />}
       {err && <InlineError message={err.message} action={err.action} />}
 
       <div className="flex gap-2.5">
         <button type="button" onClick={onClose} className={`${ghostBtn} flex-1`}>Cancel</button>
-        <button type="submit" disabled={busy || Boolean(bad) || !amount} className={`${primaryBtn} flex-[2]`}>
+        <button type="submit" disabled={busy || Boolean(bad) || !amount || marketClosed} className={`${primaryBtn} flex-[2]`}>
           {busy ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />Opening…</> : `Open ${side === 'buy' ? 'long' : 'short'}`}
         </button>
       </div>
@@ -552,7 +558,9 @@ function ActiveTrade({ t, tick, now, reduce }) {
   const openAt = new Date(t.opened_at).getTime()
   const left = Math.max(0, (closeAt - now) / 1000)
   const prog = Math.min(100, Math.max(0, ((now - openAt) / Math.max(1, closeAt - openAt)) * 100))
-  const color = win ? GREEN : RED
+  // Time is up but staff have not set the result yet (server flag, with the local clock as a fallback).
+  const awaiting = Boolean(t.awaiting_settlement) || closeAt <= now
+  const color = awaiting ? AMBER : win ? GREEN : RED
 
   const share = async () => {
     setSharing(true)
@@ -577,24 +585,36 @@ function ActiveTrade({ t, tick, now, reduce }) {
           </p>
           <p className="mt-0.5 font-mono text-[11px] text-slate-500">{t.reference}</p>
         </div>
-        <button type="button" onClick={share} disabled={sharing} aria-label="Share trade image" className={iconBtn}>
+        <button type="button" onClick={share} disabled={sharing || awaiting} aria-label="Share trade image" title={awaiting ? 'Available once your result is confirmed' : undefined} className={`${iconBtn} disabled:opacity-40`}>
           {sharing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
         </button>
       </div>
 
-      <div className="mt-3 flex items-end justify-between gap-3 rounded-xl bg-[#0E1822] px-3.5 py-3">
-        <div>
-          <p className="text-[11px] text-slate-400">Unrealised PnL</p>
-          <motion.p animate={{ scale: reduce ? 1 : [1, 1.04, 1] }} transition={{ duration: 0.5 }} key={Math.round(pnlAmt * 100)}
-            className="font-mono text-2xl font-semibold tabular-nums sm:text-3xl" style={{ color }}>
-            <AnimNum value={pnlAmt} fmt={amtFmt} />
-          </motion.p>
+      {awaiting ? (
+        <div className="mt-3 flex items-center gap-3 rounded-xl bg-amber-400/10 px-3.5 py-3.5" role="status">
+          <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-300" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-amber-200">Awaiting result</p>
+            <p className="mt-0.5 text-[12px] leading-relaxed text-amber-100/70">
+              Your trade period has ended. We are confirming the result and will update your balance shortly.
+            </p>
+          </div>
         </div>
-        <p className="flex items-center gap-1 font-mono text-lg font-semibold tabular-nums" style={{ color }}>
-          {win ? <TrendingUp className="h-4 w-4" aria-hidden="true" /> : <TrendingDown className="h-4 w-4" aria-hidden="true" />}
-          <AnimNum value={pnlPct} fmt={(v) => `${pnlFmt(v)}%`} />
-        </p>
-      </div>
+      ) : (
+        <div className="mt-3 flex items-end justify-between gap-3 rounded-xl bg-[#0E1822] px-3.5 py-3">
+          <div>
+            <p className="text-[11px] text-slate-400">Market estimate (not final)</p>
+            <motion.p animate={{ scale: reduce ? 1 : [1, 1.04, 1] }} transition={{ duration: 0.5 }} key={Math.round(pnlAmt * 100)}
+              className="font-mono text-2xl font-semibold tabular-nums sm:text-3xl" style={{ color }}>
+              <AnimNum value={pnlAmt} fmt={amtFmt} />
+            </motion.p>
+          </div>
+          <p className="flex items-center gap-1 font-mono text-lg font-semibold tabular-nums" style={{ color }}>
+            {win ? <TrendingUp className="h-4 w-4" aria-hidden="true" /> : <TrendingDown className="h-4 w-4" aria-hidden="true" />}
+            <AnimNum value={pnlPct} fmt={(v) => `${pnlFmt(v)}%`} />
+          </p>
+        </div>
+      )}
 
       <dl className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">
         {[['Entry', fmtPrice(entry)], ['Current', fmtPrice(cur)], ['Margin', money(t.amount)], ['TP / SL', `${num(t.take_profit_pct) || '-'}% / ${num(t.stop_loss_pct) || '-'}%`]].map(([k, v]) => (
@@ -604,14 +624,34 @@ function ActiveTrade({ t, tick, now, reduce }) {
 
       <div className="mt-3">
         <div className="flex items-center justify-between text-[12px]">
-          <span className="flex items-center gap-1.5 text-slate-400"><Clock className="h-3.5 w-3.5" aria-hidden="true" />Closes in</span>
-          <span className="font-mono font-semibold tabular-nums text-white" role="timer">{hms(left)}</span>
+          <span className="flex items-center gap-1.5 text-slate-400"><Clock className="h-3.5 w-3.5" aria-hidden="true" />{awaiting ? 'Status' : 'Result due in'}</span>
+          {awaiting
+            ? <span className="font-semibold text-amber-300">Processing result…</span>
+            : <span className="font-mono font-semibold tabular-nums text-white" role="timer">{hms(left)}</span>}
         </div>
         <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
-          <div className="h-full rounded-full transition-[width] duration-1000 ease-linear" style={{ width: `${prog}%`, background: color }} />
+          <div className={`h-full rounded-full transition-[width] duration-1000 ease-linear ${awaiting ? 'animate-pulse' : ''}`} style={{ width: `${awaiting ? 100 : prog}%`, background: color }} />
         </div>
       </div>
       <AnimatePresence>{toast && <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} role="status" className="mt-2 text-center text-[12px] text-[#9BF0C8]">{toast}</motion.p>}</AnimatePresence>
+    </motion.li>
+  )
+}
+
+/* ───────────── SETTLED NOTICE ───────────── */
+
+function SettledNotice({ t, onDismiss }) {
+  const profit = t.outcome === 'profit'
+  const c = profit ? GREEN : RED
+  return (
+    <motion.li layout initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, height: 0 }}
+      className="flex items-start gap-3 rounded-xl px-3.5 py-3" style={{ background: `${c}1A` }} role="status">
+      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" style={{ color: c }} aria-hidden="true" />
+      <div className="min-w-0 flex-1 text-[13px] text-slate-100">
+        <p className="font-semibold">{t.pair} trade settled: <span style={{ color: c }}>{profit ? 'Profit' : 'Loss'} {amtFmt(num(t.pnl_amount))} ({pnlFmt(num(t.pnl_pct))}%)</span></p>
+        <p className="mt-0.5 text-[12px] text-slate-400">Ref {t.reference}. Your margin was released and your balance has been updated.</p>
+      </div>
+      <button type="button" onClick={onDismiss} aria-label="Dismiss" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-white/10 hover:text-white"><X className="h-3.5 w-3.5" /></button>
     </motion.li>
   )
 }
@@ -620,7 +660,6 @@ function ActiveTrade({ t, tick, now, reduce }) {
 
 // Shown only when every live feed fails, so the section is never empty or broken.
 const TIPS = [
-  ['Size every trade for the stop, not the hope', 'Decide what you can lose first, then pick the margin. Risking 1-2% of your balance per trade keeps one bad call from ending your week.', 'Risk'],
   ['Leverage multiplies losses as fast as gains', 'At 10x, a 5% move against you is a 50% hit to your margin. Start low until your strategy proves itself.', 'Leverage'],
   ['Check the economic calendar before forex entries', 'Rate decisions, CPI and jobs data can move pairs by dozens of pips in minutes. Avoid opening right before them.', 'Forex'],
   ['Trade with the higher-timeframe trend', 'Confirm direction on the 4H or daily chart, then time the entry on the 15m or 1H. Counter-trend trades need a clear reason.', 'Analysis'],
@@ -745,25 +784,14 @@ export default function Trade() {
   const [maxOpen, setMaxOpen] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [flash, setFlash] = useState('')
+  const [settled, setSettled] = useState([])
   const [refreshKey, setRefreshKey] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const alive = useRef(true)
-  const expiring = useRef(new Set())
+  const prevIds = useRef([])
 
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
 
-  const loadActive = useCallback(() => {
-    api.get('/api/trades/active/')
-      .then((res) => {
-        if (!alive.current) return
-        setTrades(res.data?.data?.results || [])
-        setMaxOpen(num(res.data?.data?.max_open_trades))
-        setTradesErr('')
-      })
-      .catch((e) => {
-        if (alive.current) setTradesErr(describeError(e, 'We could not load your active trades.').message)
-      })
-  }, [])
   const loadSummary = useCallback(() => {
     api.get('/api/trades/summary/').then((r) => alive.current && setSummary(r.data?.data ?? null)).catch(() => {})
   }, [])
@@ -771,6 +799,35 @@ export default function Trade() {
   const loadConfig = useCallback(() => {
     api.get('/api/trades/config/').then((r) => alive.current && setCfg(r.data?.data ?? null)).catch(() => {})
   }, [])
+
+  const loadActive = useCallback(() => {
+    api.get('/api/trades/active/')
+      .then((res) => {
+        if (!alive.current) return
+        const list = res.data?.data?.results || []
+        const ids = new Set(list.map((x) => x.id))
+        // Trades that left the active list were settled by staff: fetch the result and tell the user.
+        const gone = prevIds.current.filter((id) => !ids.has(id))
+        prevIds.current = list.map((x) => x.id)
+        if (gone.length) {
+          gone.forEach((id) => {
+            api.get(`/api/trades/${id}/`)
+              .then((r) => {
+                const d = r.data?.data
+                if (alive.current && d?.status === 'closed') setSettled((s) => [d, ...s.filter((x) => x.id !== d.id)])
+              })
+              .catch(() => {})
+          })
+          loadSummary()
+        }
+        setTrades(list)
+        setMaxOpen(num(res.data?.data?.max_open_trades))
+        setTradesErr('')
+      })
+      .catch((e) => {
+        if (alive.current) setTradesErr(describeError(e, 'We could not load your active trades.').message)
+      })
+  }, [loadSummary])
 
   const refresh = () => {
     if (refreshing) return
@@ -783,26 +840,17 @@ export default function Trade() {
   useEffect(() => {
     loadConfig()
     loadActive(); loadSummary()
-    const poll = setInterval(loadActive, 20000)
+    const poll = setInterval(loadActive, ACTIVE_POLL_MS)
     const clock = setInterval(() => setNow(Date.now()), 1000)
     return () => { clearInterval(poll); clearInterval(clock) }
   }, [loadActive, loadSummary, loadConfig])
-
-  // When a trade reaches its close time, refresh once so it leaves the active list
-  useEffect(() => {
-    (trades || []).forEach((t) => {
-      if (new Date(t.scheduled_close_at).getTime() <= now && !expiring.current.has(t.id)) {
-        expiring.current.add(t.id)
-        setTimeout(() => { loadActive(); loadSummary() }, 3000)
-      }
-    })
-  }, [now, trades, loadActive, loadSummary])
 
   const pairs = useMemo(() => [pair, ...(trades || []).map((t) => t.pair)], [pair, trades])
   const prices = useLivePrices(pairs)
 
   const onOpened = (d) => {
     setFormOpen(false)
+    prevIds.current = [d.id, ...prevIds.current.filter((id) => id !== d.id)]
     setTrades((l) => [d, ...(l || []).filter((x) => x.id !== d.id)])
     if (d.balances) setSummary((s) => ({ ...(s || {}), ...d.balances }))
     setFlash(`Trade ${d.reference} opened.`)
@@ -811,6 +859,8 @@ export default function Trade() {
   }
 
   const full = maxOpen && trades && trades.length >= maxOpen
+  const closed = cfg?.market_open === false
+  const cannotOpen = Boolean(full) || closed
 
   return (
     <div>
@@ -839,23 +889,31 @@ export default function Trade() {
             </div>
             <div className="flex items-center gap-2">
               {trades?.length > 0 && (
-                <button type="button" onClick={() => setFormOpen(true)} disabled={Boolean(full)} aria-label="Enter a trade" className={`${iconBtn} bg-[#3DDC97] text-[#06140E] hover:bg-[#5BEBAD] hover:text-[#06140E] disabled:opacity-50`}><Plus className="h-4 w-4" /></button>
+                <button type="button" onClick={() => setFormOpen(true)} disabled={cannotOpen} aria-label="Enter a trade" className={`${iconBtn} bg-[#3DDC97] text-[#06140E] hover:bg-[#5BEBAD] hover:text-[#06140E] disabled:opacity-50`}><Plus className="h-4 w-4" /></button>
               )}
               <Link to={HISTORY_ROUTE} aria-label="Trade history" className={iconBtn}><History className="h-4 w-4" /></Link>
             </div>
           </div>
 
           <AnimatePresence>{flash && <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} role="status" className="mt-3 rounded-xl bg-[#3DDC97]/10 px-3.5 py-2.5 text-[13px] text-[#9BF0C8]">{flash}</motion.p>}</AnimatePresence>
-          {cfg && cfg.market_open === false && <p className="mt-3 rounded-xl bg-amber-400/10 px-3.5 py-2.5 text-[12px] text-amber-200">Forex markets are closed. Crypto trading may still be available.</p>}
+          {closed && <p className="mt-3 rounded-xl bg-amber-400/10 px-3.5 py-2.5 text-[12px] text-amber-200">{WEEKEND_MSG}</p>}
+
+          {settled.length > 0 && (
+            <ul className="mt-3 space-y-2">
+              <AnimatePresence initial={false}>
+                {settled.map((t) => <SettledNotice key={t.id} t={t} onDismiss={() => setSettled((s) => s.filter((x) => x.id !== t.id))} />)}
+              </AnimatePresence>
+            </ul>
+          )}
 
           <div className="mt-3">
             {tradesErr && <InlineError message={tradesErr} onRetry={loadActive} />}
             {!tradesErr && !trades && <div className="h-48 animate-pulse rounded-2xl bg-white/[0.04]" />}
             {!tradesErr && trades && trades.length === 0 && (
-              <button type="button" onClick={() => setFormOpen(true)} className="group flex w-full flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 px-4 py-10 transition-colors hover:border-[#3DDC97]/60">
-                <motion.span animate={reduce ? {} : { scale: [1, 1.08, 1] }} transition={{ duration: 2, repeat: Infinity }} className="grid h-14 w-14 place-items-center rounded-full bg-[#3DDC97]/[0.15] text-[#3DDC97]"><Plus className="h-6 w-6" /></motion.span>
+              <button type="button" onClick={() => setFormOpen(true)} disabled={closed} className="group flex w-full flex-col items-center gap-3 rounded-2xl border border-dashed border-white/15 px-4 py-10 transition-colors hover:border-[#3DDC97]/60 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-white/15">
+                <motion.span animate={reduce || closed ? {} : { scale: [1, 1.08, 1] }} transition={{ duration: 2, repeat: Infinity }} className="grid h-14 w-14 place-items-center rounded-full bg-[#3DDC97]/[0.15] text-[#3DDC97]"><Plus className="h-6 w-6" /></motion.span>
                 <span className="text-sm font-medium text-white">No active trades</span>
-                <span className="text-[12px] text-slate-400">Tap to enter your first trade</span>
+                <span className="text-[12px] text-slate-400">{closed ? 'Trading reopens on Monday' : 'Tap to enter your first trade'}</span>
               </button>
             )}
             {trades && trades.length > 0 && (

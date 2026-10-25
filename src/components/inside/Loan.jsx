@@ -935,10 +935,6 @@ function ConditionsSection({ cfg, state, error, onRetry, money }) {
             Identity verification (KYC) must be approved, and only one loan can be open at a time.
           </ConditionRow>
           <ConditionRow>
-            Every request needs admin approval. Nothing is owed and no interest runs until it is approved, and you can
-            cancel while it is pending.
-          </ConditionRow>
-          <ConditionRow>
             Interest is <b className="text-white">{pct(cfg.daily_interest_percent)} per day</b> of the original amount
             during the loan period. After the due date it rises to{' '}
             <b className="text-white">{pct(cfg.overdue_daily_interest_percent)} per day</b>.
