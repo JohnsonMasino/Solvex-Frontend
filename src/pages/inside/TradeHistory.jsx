@@ -13,6 +13,8 @@ const TRADE_ROUTE = '/dashboard/trade' // route of Trade.jsx, change if yours di
 const PAGE_SIZE = 20
 const GREEN = '#3DDC97'
 const RED = '#F6465D'
+const AMBER = '#FBBF24'
+const SKY = '#38BDF8'
 const EMPTY = { outcome: 'all', market: '', side: '', order: '-opened_at', from: '', to: '', pair: '' }
 
 const container = { hidden: {}, show: { transition: { staggerChildren: 0.07, delayChildren: 0.04 } } }
@@ -32,7 +34,8 @@ const fieldCls =
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 const money = (v) => `$${Math.abs(num(v)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const sMoney = (v) => `${num(v) >= 0 ? '+' : '-'}${money(v)}`
-const sPct = (v) => `${num(v) >= 0 ? '+' : '-'}${Math.abs(num(v)).toFixed(2)}%`
+// Admin-entered profits on small trades can give very large percentages, so format with separators.
+const sPct = (v) => `${num(v) >= 0 ? '+' : '-'}${Math.abs(num(v)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '--')
 const nice = (s) => String(s || '').replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
 const hms = (s) => {
@@ -46,8 +49,20 @@ const flatten = (v) => {
   if (typeof v === 'object') return Object.values(v).flatMap(flatten)
   return [String(v)]
 }
+
+// Trade time is up but the result has not been set yet (server flag, local clock as fallback).
+const isAwaiting = (t) =>
+  t.status === 'open' && (Boolean(t.awaiting_settlement) || new Date(t.scheduled_close_at).getTime() <= Date.now())
+
+const CLOSE_REASON = {
+  admin: 'Settled by our team',
+  expiry: 'Trade duration ended',
+  weekend: 'Weekend market close',
+}
+const closeReason = (r) => CLOSE_REASON[r] || (r ? nice(r) : '--')
+
 const tone = (t) => {
-  if (t.status === 'open') return { c: '#38BDF8', label: 'Open' }
+  if (t.status === 'open') return isAwaiting(t) ? { c: AMBER, label: 'Awaiting result' } : { c: SKY, label: 'Open' }
   if (t.outcome === 'profit') return { c: GREEN, label: 'Profit' }
   if (t.outcome === 'loss') return { c: RED, label: 'Loss' }
   return { c: '#94A3B8', label: nice(t.outcome) || 'Closed' }
@@ -137,7 +152,7 @@ function Summary({ s, error, onRetry }) {
     <section aria-label="Trading summary" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
       <div className="rounded-xl bg-[#1A2C3D] p-3.5 sm:p-5">
         <p className="text-[13px] font-medium text-slate-300 sm:text-sm">Total profit / loss</p>
-        <p className="mt-1 font-mono text-3xl font-semibold tabular-nums sm:text-4xl" style={{ color: pnl >= 0 ? GREEN : RED }}>{sMoney(pnl)}</p>
+        <p className="mt-1 break-words font-mono text-3xl font-semibold tabular-nums sm:text-4xl" style={{ color: pnl >= 0 ? GREEN : RED }}>{sMoney(pnl)}</p>
         <div className="mt-4">
           <div className="flex justify-between text-[11px] text-slate-400 sm:text-xs"><span>Win rate</span><span className="font-mono text-slate-200">{rate.toFixed(0)}%</span></div>
           <div className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
@@ -149,7 +164,7 @@ function Summary({ s, error, onRetry }) {
           <Stat label="Trades" value={num(s.total_trades)} />
           <Stat label="Wins" value={wins} color={GREEN} />
           <Stat label="Losses" value={losses} color={RED} />
-          <Stat label="Open" value={`${num(s.open_trades)}/${num(s.max_open_trades)}`} color="#38BDF8" />
+          <Stat label="Open" value={`${num(s.open_trades)}/${num(s.max_open_trades)}`} color={SKY} />
         </div>
       </div>
     </section>
@@ -159,6 +174,7 @@ function Summary({ s, error, onRetry }) {
 function Row({ t, onOpen }) {
   const o = tone(t)
   const buy = t.side === 'buy'
+  const awaiting = isAwaiting(t)
   return (
     <li>
       <button type="button" onClick={() => onOpen(t)}
@@ -173,13 +189,13 @@ function Row({ t, onOpen }) {
           </span>
           <span className="mt-0.5 block truncate text-[11px] text-slate-400 sm:text-xs">{fmtDate(t.opened_at)} · {money(t.amount)}</span>
         </span>
-        <span className="shrink-0 text-right">
+        <span className="max-w-[45%] shrink-0 text-right">
           {t.status === 'open' ? (
-            <span className="font-mono text-[13px] font-semibold text-sky-300">Open</span>
+            <span className="font-mono text-[13px] font-semibold" style={{ color: o.c }}>{awaiting ? 'Awaiting result' : 'Open'}</span>
           ) : (
             <>
-              <span className="block font-mono text-[13px] font-semibold tabular-nums sm:text-sm" style={{ color: o.c }}>{sMoney(t.pnl_amount)}</span>
-              <span className="block font-mono text-[11px] tabular-nums text-slate-400">{sPct(t.pnl_pct)}</span>
+              <span className="block break-words font-mono text-[13px] font-semibold tabular-nums sm:text-sm" style={{ color: o.c }}>{sMoney(t.pnl_amount)}</span>
+              <span className="block break-words font-mono text-[11px] tabular-nums text-slate-400">{sPct(t.pnl_pct)}</span>
             </>
           )}
         </span>
@@ -202,12 +218,16 @@ function Detail({ base, id }) {
   const fresh = res.key === key
   const t = (fresh && res.data) || base
   const o = tone(t)
+  const awaiting = isAwaiting(t)
+  const open = t.status === 'open'
   const rows = [
     ['Reference', t.reference], ['Market', nice(t.market_type)], ['Direction', t.side === 'buy' ? 'Buy / Long' : 'Sell / Short'],
     ['Margin', money(t.amount)], ['Leverage', `${t.leverage}x`], ['Take profit', `${num(t.take_profit_pct) || '-'}%`],
     ['Stop loss', `${num(t.stop_loss_pct) || '-'}%`], ['Duration', `${t.duration_hours}h`], ['Opened', fmtDate(t.opened_at)],
-    ['Scheduled close', fmtDate(t.scheduled_close_at)],
-    ...(t.status === 'closed' ? [['Closed', fmtDate(t.closed_at)], ['Close reason', nice(t.close_reason)]] : [['Time remaining', hms(t.time_remaining_seconds)]]),
+    [open ? 'Result due' : 'Scheduled close', fmtDate(t.scheduled_close_at)],
+    ...(open
+      ? [awaiting ? ['Status', 'Awaiting result'] : ['Time remaining', hms(t.time_remaining_seconds)]]
+      : [['Settled', fmtDate(t.closed_at)], ['Settled by', closeReason(t.close_reason)]]),
   ]
   return (
     <div className="space-y-4">
@@ -216,13 +236,19 @@ function Detail({ base, id }) {
         <span className="mt-1 inline-block rounded-md px-2 py-0.5 text-[11px] font-bold" style={{ background: `${o.c}26`, color: o.c }}>{o.label}</span>
         {t.status === 'closed' ? (
           <>
-            <p className="mt-3 font-mono text-3xl font-semibold tabular-nums" style={{ color: o.c }}>{sMoney(t.pnl_amount)}</p>
-            <p className="font-mono text-sm tabular-nums text-slate-400">{sPct(t.pnl_pct)}</p>
+            <p className="mt-3 break-words font-mono text-3xl font-semibold tabular-nums" style={{ color: o.c }}>{sMoney(t.pnl_amount)}</p>
+            <p className="break-words font-mono text-sm tabular-nums text-slate-400">{sPct(t.pnl_pct)}</p>
           </>
-        ) : <p className="mt-3 text-[13px] text-slate-400">Result is shown once the trade closes.</p>}
+        ) : awaiting ? (
+          <p className="mt-3 flex items-center justify-center gap-2 text-[13px] text-amber-200">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />We are confirming your result. Your balance updates once it is settled.
+          </p>
+        ) : (
+          <p className="mt-3 text-[13px] text-slate-400">Your result will appear here once the trade is settled.</p>
+        )}
       </div>
       <div className="flex h-1.5 overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
-        <div className="h-full rounded-full transition-[width]" style={{ width: `${Math.min(100, num(t.progress_pct))}%`, background: o.c }} />
+        <div className={`h-full rounded-full transition-[width] ${awaiting ? 'animate-pulse' : ''}`} style={{ width: `${awaiting || t.status === 'closed' ? 100 : Math.min(100, num(t.progress_pct))}%`, background: o.c }} />
       </div>
       {fresh && res.error && <InlineError message={res.error} onRetry={() => setAttempt((a) => a + 1)} />}
       {!fresh && <p className="flex items-center justify-center gap-2 text-[11px] text-slate-500"><Loader2 className="h-3 w-3 animate-spin" />Refreshing details…</p>}
@@ -389,7 +415,7 @@ export default function TradeHistory() {
               <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
                 <span className="grid h-12 w-12 place-items-center rounded-full bg-white/[0.06] text-slate-400"><History className="h-5 w-5" /></span>
                 <p className="text-sm font-medium text-white">{dirty ? 'No trades match these filters' : 'No trades yet'}</p>
-                <p className="text-[12px] text-slate-400">{dirty ? 'Try a different filter or clear them.' : 'Your closed and open trades will appear here.'}</p>
+                <p className="text-[12px] text-slate-400">{dirty ? 'Try a different filter or clear them.' : 'Your open and settled trades will appear here.'}</p>
                 {dirty ? <button type="button" onClick={reset} className={`${ghostBtn} mt-2`}>Clear filters</button> : <Link to={TRADE_ROUTE} className={`${primaryBtn} mt-2`}>Enter a trade</Link>}
               </div>
             )}
@@ -405,7 +431,7 @@ export default function TradeHistory() {
               </button>
             )}
             {(f.outcome === 'profit' || f.outcome === 'loss') && !loading && hasMore && visible.length < 3 && (
-              <p className="mt-2 text-center text-[11px] text-slate-500">More closed trades are available. Load more to find additional {f.outcome}s.</p>
+              <p className="mt-2 text-center text-[11px] text-slate-500">More settled trades are available. Load more to find additional {f.outcome}s.</p>
             )}
           </div>
         </motion.section>
