@@ -5,12 +5,21 @@ import { useReducedMotion } from 'framer-motion'
 import MarqueeModule from 'react-fast-marquee'
 import {
   AlertCircle,
+  BookOpen,
+  Calculator,
+  ChevronDown,
+  Clock,
   Download,
   Eye,
   EyeOff,
   Gift,
+  Globe,
+  Layers,
   RotateCcw,
+  Scale,
+  ShieldCheck,
   SlidersHorizontal,
+  Target,
   TrendingUp,
   Upload,
 } from 'lucide-react'
@@ -135,6 +144,96 @@ const STATUS = {
 
 const OUT_TYPES = new Set(['withdrawal', 'withdrawal_reserve', 'trade_lock'])
 
+// Major forex sessions in UTC hours (approximate, they shift by an hour with daylight saving).
+const SESSIONS = [
+  { name: 'Sydney', region: 'Asia-Pacific', start: 21, end: 6, bar: 'bg-sky-400', text: 'text-sky-300' },
+  { name: 'Tokyo', region: 'Asia', start: 0, end: 9, bar: 'bg-violet-400', text: 'text-violet-300' },
+  { name: 'London', region: 'Europe', start: 7, end: 16, bar: 'bg-amber-400', text: 'text-amber-300' },
+  { name: 'New York', region: 'Americas', start: 12, end: 21, bar: 'bg-[#3DDC97]', text: 'text-[#3DDC97]' },
+]
+
+const PLAYBOOK = [
+  {
+    icon: ShieldCheck,
+    chip: 'bg-[#3DDC97]/[0.15] text-[#3DDC97]',
+    title: 'Risk a small slice per trade',
+    body: 'Many professionals risk only 1 to 2% of their account on a single idea. A string of losses then hurts, but it cannot end your account.',
+  },
+  {
+    icon: Scale,
+    chip: 'bg-amber-400/[0.15] text-amber-300',
+    title: 'Aim for a favourable risk/reward',
+    body: 'If you risk $1 to make $2 (1:2), you can be wrong more often than you are right and still come out ahead over many trades.',
+  },
+  {
+    icon: Target,
+    chip: 'bg-sky-400/[0.15] text-sky-300',
+    title: 'Plan the exit before the entry',
+    body: 'Decide your stop loss and take profit first. If you cannot say where the idea is wrong, the setup is not ready.',
+  },
+  {
+    icon: Layers,
+    chip: 'bg-violet-400/[0.15] text-violet-300',
+    title: 'Avoid doubling the same bet',
+    body: 'Long EUR/USD and long GBP/USD, or several altcoins at once, often move together. Check what you already have open.',
+  },
+]
+
+const LEVERAGE_ROWS = [1, 5, 10, 25, 50, 100]
+
+const GLOSSARY = [
+  {
+    term: 'Pip',
+    tag: 'Forex',
+    body: 'The smallest standard price step in a forex pair, usually the 4th decimal (0.0001), or the 2nd for yen pairs. Traders measure moves and stops in pips.',
+  },
+  {
+    term: 'Leverage',
+    tag: 'Both',
+    body: 'Lets you control a larger position than your margin. 10x means a 1% price move changes your result by about 10%, in either direction.',
+  },
+  {
+    term: 'Margin',
+    tag: 'Both',
+    body: 'The amount you set aside to open a leveraged trade. It stays locked while the trade is open and is released when the trade is settled.',
+  },
+  {
+    term: 'Spread',
+    tag: 'Both',
+    body: 'The gap between the buying (ask) and selling (bid) price. It is a cost of trading, and it widens when markets are thin or volatile.',
+  },
+  {
+    term: 'Stop loss',
+    tag: 'Both',
+    body: 'A pre-set level where a losing trade is meant to be closed to cap the damage. Placing it before you enter removes emotion from the decision.',
+  },
+  {
+    term: 'Take profit',
+    tag: 'Both',
+    body: 'A pre-set level where a winning trade is meant to be closed to lock in gains, so a good move is not given back.',
+  },
+  {
+    term: 'Slippage',
+    tag: 'Both',
+    body: 'The difference between the price you expected and the price you actually got, common during news releases and fast markets.',
+  },
+  {
+    term: 'Liquidation',
+    tag: 'Crypto',
+    body: 'When losses on a leveraged position use up the margin, the position is closed. Higher leverage puts the liquidation price closer to your entry.',
+  },
+  {
+    term: 'Stablecoin',
+    tag: 'Crypto',
+    body: 'A crypto asset designed to track a stable value, usually one US dollar (for example USDT). Many crypto pairs are quoted in stablecoins.',
+  },
+  {
+    term: 'Volatility',
+    tag: 'Both',
+    body: 'How much and how quickly a price moves. Higher volatility means bigger opportunities and bigger risk, so position size should shrink as it rises.',
+  },
+]
+
 /* ────────────────────────────────────────────────
    HELPERS
 ──────────────────────────────────────────────── */
@@ -143,6 +242,23 @@ const num = (v) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
 }
+
+// Keeps only digits and one decimal point (accepts a comma as the separator too)
+const dec = (raw, places = 8) => {
+  let v = String(raw).replace(/,/g, '.').replace(/[^0-9.]/g, '')
+  const i = v.indexOf('.')
+  if (i !== -1) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/\./g, '').slice(0, places)
+  return v.replace(/^0+(?=\d)/, '').slice(0, 14)
+}
+
+const usd = (v) => `$${num(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+const px = (v) => {
+  if (!v) return '--'
+  return v.toLocaleString('en-US', { maximumFractionDigits: v >= 1000 ? 2 : v >= 1 ? 4 : 8 })
+}
+
+const sgn = (v, d = 2) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`
 
 function makeFormatters(currency) {
   let money
@@ -245,6 +361,11 @@ function buildCandles(entries, currentBalance) {
 
 const loadError = (err, what) =>
   err?.response ? `We could not load ${what}.` : 'Network error. Check your connection and try again.'
+
+const inSession = (hour, s) => (s.start < s.end ? hour >= s.start && hour < s.end : hour >= s.start || hour < s.end)
+
+const fieldCls =
+  'w-full rounded-xl bg-[#0E1822] px-3.5 py-3 font-mono text-[15px] text-white ring-1 ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#3DDC97]/70'
 
 /* ────────────────────────────────────────────────
    LIVE CLOCK (its own small chip, monospace digits)
@@ -569,6 +690,445 @@ function TransactionSkeleton() {
 }
 
 /* ────────────────────────────────────────────────
+   SECTION 1: TRADE CALCULATOR
+──────────────────────────────────────────────── */
+
+function CalcField({ id, label, value, onChange, suffix, placeholder = '0', places = 8 }) {
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1.5 block px-0.5 text-[13px] font-semibold text-white">
+        {label}
+      </label>
+      <div className="relative">
+        <input
+          id={id}
+          inputMode="decimal"
+          autoComplete="off"
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onChange(dec(e.target.value, places))}
+          className={`${fieldCls} ${suffix ? 'pr-12' : ''}`}
+        />
+        {suffix && (
+          <span className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 font-mono text-xs text-slate-500">
+            {suffix}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ResultRow({ label, value, color, strong }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2">
+      <dt className="text-[13px] text-slate-400">{label}</dt>
+      <dd
+        className={`truncate text-right font-mono tabular-nums ${strong ? 'text-lg font-semibold' : 'text-[13px] font-medium'} ${
+          color ? '' : 'text-white'
+        }`}
+        style={color ? { color } : undefined}
+      >
+        {value}
+      </dd>
+    </div>
+  )
+}
+
+function TradeCalculator() {
+  const [tab, setTab] = useState('pnl')
+  const [side, setSide] = useState('buy')
+  const [lev, setLev] = useState('10')
+  const [entry, setEntry] = useState('')
+  const [margin, setMargin] = useState('500')
+  const [exit, setExit] = useState('')
+  const [balance, setBalance] = useState('1000')
+  const [riskPct, setRiskPct] = useState('1')
+  const [stop, setStop] = useState('')
+  const [tp, setTp] = useState('')
+
+  const dir = side === 'buy' ? 1 : -1
+  const L = Math.max(1, num(lev))
+  const e = num(entry)
+
+  // Profit and loss
+  const m = num(margin)
+  const x = num(exit)
+  const pnlReady = e > 0 && x > 0 && m > 0
+  const rawPct = pnlReady ? dir * ((x - e) / e) * L * 100 : 0
+  const pnlPct = Math.max(-100, rawPct) // a trade cannot lose more than its margin
+  const pnlAmt = (m * pnlPct) / 100
+  const posSize = m * L
+  const liq = e > 0 ? e * (1 - dir / L) : 0
+  const wipeMove = 100 / L
+  const pnlColor = pnlPct >= 0 ? UP : DOWN
+
+  // Position size
+  const b = num(balance)
+  const r = num(riskPct)
+  const st = num(stop)
+  const t = num(tp)
+  const stopDist = e > 0 && st > 0 ? Math.abs(e - st) / e : 0
+  const stopWrongSide = st > 0 && e > 0 && (dir === 1 ? st >= e : st <= e)
+  const tpWrongSide = t > 0 && e > 0 && (dir === 1 ? t <= e : t >= e)
+  const sizeReady = b > 0 && r > 0 && stopDist > 0 && !stopWrongSide
+  const riskAmt = (b * r) / 100
+  const size = sizeReady ? riskAmt / stopDist : 0
+  const units = sizeReady && e > 0 ? size / e : 0
+  const marginNeeded = size / L
+  const rr = sizeReady && t > 0 && !tpWrongSide ? Math.abs(t - e) / e / stopDist : 0
+  const overBalance = sizeReady && marginNeeded > b
+
+  const tabCls = (k) =>
+    `h-9 flex-1 rounded-lg text-xs font-semibold transition-colors sm:text-[13px] ${
+      tab === k ? 'bg-[#3DDC97] text-[#06231A]' : 'text-slate-300 hover:bg-white/[0.06]'
+    }`
+
+  return (
+    <div className="rounded-2xl bg-[#14212D] p-3.5 sm:p-5">
+      <div className="flex items-start gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#3DDC97]/[0.15] text-[#3DDC97]">
+          <Calculator className="h-[18px] w-[18px]" aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-white sm:text-base">Trade calculator</h3>
+          <p className="mt-0.5 text-xs text-slate-400">
+            Estimate profit, loss and the right position size before you open a trade.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 flex gap-1 rounded-xl bg-[#0E1822] p-1" role="tablist" aria-label="Calculator mode">
+        <button type="button" role="tab" aria-selected={tab === 'pnl'} onClick={() => setTab('pnl')} className={tabCls('pnl')}>
+          Profit &amp; loss
+        </button>
+        <button type="button" role="tab" aria-selected={tab === 'size'} onClick={() => setTab('size')} className={tabCls('size')}>
+          Position size
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-5 lg:grid-cols-2">
+        {/* Inputs */}
+        <div className="space-y-3.5">
+          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Direction">
+            {[
+              ['buy', 'Buy / Long', UP],
+              ['sell', 'Sell / Short', DOWN],
+            ].map(([k, label, c]) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={side === k}
+                onClick={() => setSide(k)}
+                className="h-11 rounded-xl text-sm font-semibold transition-colors"
+                style={side === k ? { background: c, color: '#06140E' } : { background: 'rgba(255,255,255,0.05)', color: '#cbd5e1' }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'pnl' ? (
+            <>
+              <CalcField id="c-margin" label="Margin (amount)" value={margin} onChange={setMargin} suffix="USD" places={2} />
+              <div className="grid grid-cols-2 gap-3">
+                <CalcField id="c-entry" label="Entry price" value={entry} onChange={setEntry} />
+                <CalcField id="c-exit" label="Exit price" value={exit} onChange={setExit} />
+              </div>
+              <CalcField id="c-lev" label="Leverage" value={lev} onChange={setLev} suffix="x" places={0} placeholder="10" />
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <CalcField id="c-bal" label="Account balance" value={balance} onChange={setBalance} suffix="USD" places={2} />
+                <CalcField id="c-risk" label="Risk per trade" value={riskPct} onChange={setRiskPct} suffix="%" places={2} placeholder="1" />
+              </div>
+              <CalcField id="c-entry2" label="Entry price" value={entry} onChange={setEntry} />
+              <div className="grid grid-cols-2 gap-3">
+                <CalcField id="c-stop" label="Stop loss price" value={stop} onChange={setStop} />
+                <CalcField id="c-tp" label="Take profit (optional)" value={tp} onChange={setTp} />
+              </div>
+              <CalcField id="c-lev2" label="Leverage" value={lev} onChange={setLev} suffix="x" places={0} placeholder="10" />
+            </>
+          )}
+        </div>
+
+        {/* Results */}
+        <div className="rounded-xl bg-[#0E1822] p-3.5 sm:p-4">
+          {tab === 'pnl' ? (
+            pnlReady ? (
+              <dl className="divide-y divide-white/[0.06]">
+                <ResultRow label="Estimated profit / loss" value={`${pnlAmt >= 0 ? '+' : '−'}${usd(Math.abs(pnlAmt))}`} color={pnlColor} strong />
+                <ResultRow label="Return on margin" value={`${sgn(pnlPct)}%`} color={pnlColor} />
+                <ResultRow label="Position size" value={usd(posSize)} />
+                <ResultRow label="Margin used" value={usd(m)} />
+                <ResultRow label="Approx. liquidation price" value={px(liq)} color={DOWN} />
+                <ResultRow label="Move that wipes out margin" value={`${wipeMove.toFixed(2)}%`} />
+              </dl>
+            ) : (
+              <p className="py-10 text-center text-sm text-slate-400">
+                Enter margin, entry and exit price to see your estimated result.
+              </p>
+            )
+          ) : sizeReady ? (
+            <dl className="divide-y divide-white/[0.06]">
+              <ResultRow label="Position size to trade" value={usd(size)} color={UP} strong />
+              <ResultRow label="Amount at risk" value={usd(riskAmt)} color={DOWN} />
+              <ResultRow label="Stop distance" value={`${(stopDist * 100).toFixed(2)}%`} />
+              <ResultRow label="Units of the asset" value={units.toLocaleString('en-US', { maximumFractionDigits: 6 })} />
+              <ResultRow label={`Margin needed at ${L}x`} value={usd(marginNeeded)} color={overBalance ? DOWN : undefined} />
+              <ResultRow label="Risk / reward" value={rr > 0 ? `1 : ${rr.toFixed(2)}` : '--'} color={rr >= 2 ? UP : undefined} />
+            </dl>
+          ) : (
+            <p className="py-10 text-center text-sm text-slate-400">
+              Enter your balance, risk %, entry and stop loss to size your trade.
+            </p>
+          )}
+
+          {tab === 'size' && stopWrongSide && (
+            <p className="mt-3 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-200" role="status">
+              For a {side === 'buy' ? 'long' : 'short'} trade, the stop loss should be {side === 'buy' ? 'below' : 'above'} your entry price.
+            </p>
+          )}
+          {tab === 'size' && !stopWrongSide && tpWrongSide && (
+            <p className="mt-3 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-200" role="status">
+              For a {side === 'buy' ? 'long' : 'short'} trade, take profit should be {side === 'buy' ? 'above' : 'below'} your entry price.
+            </p>
+          )}
+          {tab === 'size' && overBalance && (
+            <p className="mt-3 rounded-lg bg-[#F6465D]/10 px-3 py-2 text-xs text-red-200" role="status">
+              That position needs more margin than your balance. Raise leverage carefully, widen the stop or lower your risk %.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <p className="mt-3 px-0.5 text-[11px] leading-relaxed text-slate-500">
+        Estimates only. They ignore fees and spreads, and your actual result is confirmed when the trade is settled.
+      </p>
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────
+   SECTION 2: MARKET SESSIONS
+──────────────────────────────────────────────── */
+
+function MarketSessions() {
+  const [now, setNow] = useState(() => new Date())
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30000)
+    return () => clearInterval(id)
+  }, [])
+
+  const hour = now.getUTCHours() + now.getUTCMinutes() / 60
+  const weekday = now.getUTCDay()
+  const weekend = weekday === 0 || weekday === 6
+  const nowPct = (hour / 24) * 100
+  const openCount = weekend ? 0 : SESSIONS.filter((s) => inSession(hour, s)).length
+  const overlap = !weekend && inSession(hour, SESSIONS[2]) && inSession(hour, SESSIONS[3])
+
+  const segments = (s) => (s.start < s.end ? [[s.start, s.end]] : [[s.start, 24], [0, s.end]])
+  const hh = (h) => `${String(h).padStart(2, '0')}:00`
+
+  return (
+    <div className="rounded-2xl bg-[#14212D] p-3.5 sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-sky-400/[0.15] text-sky-300">
+            <Globe className="h-[18px] w-[18px]" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-white sm:text-base">Market sessions</h3>
+            <p className="mt-0.5 text-xs text-slate-400">Liquidity follows the sun. Times are shown in UTC.</p>
+          </div>
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-[#0E1822] px-3 py-1.5 font-mono text-xs text-slate-200">
+          <Clock className="h-3 w-3 text-slate-400" aria-hidden="true" />
+          {String(now.getUTCHours()).padStart(2, '0')}:{String(now.getUTCMinutes()).padStart(2, '0')} UTC
+        </span>
+      </div>
+
+      {weekend && (
+        <p className="mt-4 rounded-xl bg-amber-400/10 px-3.5 py-2.5 text-xs text-amber-200" role="status">
+          Weekend: trading is closed and reopens on Monday. Your open trades stay open until they are settled.
+        </p>
+      )}
+
+      <ul className="mt-4 space-y-3">
+        {SESSIONS.map((s) => {
+          const open = !weekend && inSession(hour, s)
+          return (
+            <li key={s.name} className="rounded-xl bg-white/[0.04] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className={`text-sm font-semibold ${open ? 'text-white' : 'text-slate-300'}`}>{s.name}</p>
+                  <p className="mt-0.5 text-[11px] text-slate-400">
+                    {s.region} · {hh(s.start)} to {hh(s.end)}
+                  </p>
+                </div>
+                <span
+                  className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                    open ? 'bg-[#3DDC97]/[0.15] text-[#3DDC97]' : 'bg-white/[0.06] text-slate-400'
+                  }`}
+                >
+                  {open ? 'Open' : 'Closed'}
+                </span>
+              </div>
+              <div className="relative mt-2.5 h-2 overflow-hidden rounded-full bg-white/[0.06]" aria-hidden="true">
+                {segments(s).map(([a, z]) => (
+                  <span
+                    key={a}
+                    className={`absolute top-0 h-full ${s.bar} ${open ? 'opacity-90' : 'opacity-35'}`}
+                    style={{ left: `${(a / 24) * 100}%`, width: `${((z - a) / 24) * 100}%` }}
+                  />
+                ))}
+                <span className="absolute top-0 h-full w-0.5 bg-white" style={{ left: `${nowPct}%` }} />
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+
+      <div className="mt-2 flex justify-between px-0.5 font-mono text-[10px] text-slate-500" aria-hidden="true">
+        <span>00:00</span>
+        <span>06:00</span>
+        <span>12:00</span>
+        <span>18:00</span>
+        <span>24:00</span>
+      </div>
+
+      <div className="mt-3 rounded-xl bg-[#0E1822] px-3.5 py-3 text-xs leading-relaxed text-slate-300">
+        {weekend ? (
+          'Sessions resume on Monday.'
+        ) : overlap ? (
+          <>
+            <span className="font-semibold text-[#3DDC97]">London and New York overlap right now.</span> This is usually the busiest, most liquid part of the day, with tighter spreads and bigger moves.
+          </>
+        ) : (
+          <>
+            {openCount} {openCount === 1 ? 'session is' : 'sessions are'} open. The London and New York overlap (about 12:00 to 16:00 UTC) is typically the most active window.
+          </>
+        )}
+      </div>
+      <p className="mt-2 px-0.5 text-[11px] text-slate-500">
+        Hours are approximate and shift by about an hour with daylight saving. Crypto trades around the clock, but activity follows these sessions too.
+      </p>
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────
+   SECTION 3: RISK MANAGEMENT PLAYBOOK
+──────────────────────────────────────────────── */
+
+function RiskPlaybook() {
+  return (
+    <div className="rounded-2xl bg-[#14212D] p-3.5 sm:p-5">
+      <div className="grid gap-3 sm:grid-cols-2">
+        {PLAYBOOK.map(({ icon: Icon, chip, title, body }) => (
+          <div key={title} className="rounded-xl bg-white/[0.04] p-3.5">
+            <span className={`grid h-9 w-9 place-items-center rounded-lg ${chip}`}>
+              <Icon className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <p className="mt-3 text-sm font-semibold text-white">{title}</p>
+            <p className="mt-1 text-xs leading-relaxed text-slate-400">{body}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 rounded-xl bg-[#0E1822] p-3.5 sm:p-4">
+        <p className="text-sm font-semibold text-white">Leverage reality check</p>
+        <p className="mt-0.5 text-xs text-slate-400">How far price has to move against you to wipe out your margin.</p>
+
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[320px] text-left text-xs">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wider text-slate-500">
+                <th scope="col" className="pb-2 font-medium">Leverage</th>
+                <th scope="col" className="pb-2 font-medium">Price move to lose it all</th>
+                <th scope="col" className="pb-2 text-right font-medium">Risk</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.06]">
+              {LEVERAGE_ROWS.map((l) => {
+                const move = 100 / l
+                const level = l <= 5 ? 'Lower' : l <= 25 ? 'Moderate' : 'High'
+                const cls =
+                  l <= 5
+                    ? 'bg-[#3DDC97]/[0.12] text-[#3DDC97]'
+                    : l <= 25
+                      ? 'bg-amber-400/[0.12] text-amber-300'
+                      : 'bg-[#F6465D]/[0.12] text-red-300'
+                return (
+                  <tr key={l}>
+                    <td className="py-2.5 font-mono font-semibold text-white">{l}x</td>
+                    <td className="py-2.5 font-mono tabular-nums text-slate-200">{move.toFixed(move < 1 ? 2 : 1)}%</td>
+                    <td className="py-2.5 text-right">
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{level}</span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────
+   SECTION 4: GLOSSARY
+──────────────────────────────────────────────── */
+
+const TAG_CLS = {
+  Forex: 'bg-sky-400/[0.15] text-sky-300',
+  Crypto: 'bg-amber-400/[0.15] text-amber-300',
+  Both: 'bg-[#3DDC97]/[0.12] text-[#3DDC97]',
+}
+
+function Glossary() {
+  const [open, setOpen] = useState(0)
+
+  return (
+    <div className="overflow-hidden rounded-2xl bg-[#14212D]">
+      <ul className="divide-y divide-white/[0.06]">
+        {GLOSSARY.map((g, i) => {
+          const isOpen = open === i
+          const panelId = `gloss-panel-${i}`
+          return (
+            <li key={g.term}>
+              <button
+                type="button"
+                onClick={() => setOpen(isOpen ? -1 : i)}
+                aria-expanded={isOpen}
+                aria-controls={panelId}
+                className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/[0.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#3DDC97]/70 sm:px-6"
+              >
+                <span className="min-w-0 flex-1 text-sm font-medium text-white">{g.term}</span>
+                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${TAG_CLS[g.tag]}`}>{g.tag}</span>
+                <ChevronDown
+                  className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              </button>
+              {isOpen && (
+                <div id={panelId} className="px-4 pb-4 text-[13px] leading-relaxed text-slate-300 sm:px-6">
+                  {g.body}
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────
    PAGE
 ──────────────────────────────────────────────── */
 
@@ -808,6 +1368,37 @@ export default function Dashboard() {
             })}
           </Marquee>
         </div>
+      </section>
+
+      {/* ── Trade calculator ── */}
+      <section aria-label="Trade calculator">
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-base font-semibold text-white">Trading tools</h2>
+        </div>
+        <TradeCalculator />
+      </section>
+
+      {/* ── Market sessions ── */}
+      <section aria-label="Market sessions">
+        <MarketSessions />
+      </section>
+
+      {/* ── Risk management playbook ── */}
+      <section aria-labelledby="risk-title">
+        <h2 id="risk-title" className="mb-3 flex items-center gap-2 text-base font-semibold text-white">
+          <ShieldCheck className="h-[18px] w-[18px] text-[#3DDC97]" aria-hidden="true" />
+          Risk management playbook
+        </h2>
+        <RiskPlaybook />
+      </section>
+
+      {/* ── Glossary ── */}
+      <section aria-labelledby="gloss-title">
+        <h2 id="gloss-title" className="mb-3 flex items-center gap-2 text-base font-semibold text-white">
+          <BookOpen className="h-[18px] w-[18px] text-[#3DDC97]" aria-hidden="true" />
+          Trading glossary
+        </h2>
+        <Glossary />
       </section>
     </div>
   )

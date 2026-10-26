@@ -1,9 +1,9 @@
 // src/pages/inside/Trade.jsx
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion } from 'framer-motion'
 import {
-  AlertCircle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Clock, ExternalLink, History, Lightbulb, Loader2, Newspaper, Plus,
+  AlertCircle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Clock, ExternalLink, History, Loader2, Newspaper, Plus,
   RefreshCw, Search, Share2, TrendingDown, TrendingUp, Wallet, X,
 } from 'lucide-react'
 import api from '../../components/Api'
@@ -17,14 +17,25 @@ const TV_SRC = 'https://s3.tradingview.com/tv.js'
 const SEND_IDEMPOTENCY_KEY = true
 // How often the active trades list is refreshed (settled trades leave the list once staff settle them)
 const ACTIVE_POLL_MS = 15000
-// Public RSS feeds. Each one is tried through rss2json first, then through a CORS proxy (no API keys).
+// How often REST prices are polled (crypto also streams over WebSocket for ~1s ticks)
+const PRICE_POLL_MS = 4000
+// Public RSS feeds. Each one is tried through rss2json first, then through several CORS proxies (no API keys).
 const NEWS_FEEDS = [
   ['Cointelegraph', 'https://cointelegraph.com/rss'],
   ['CoinDesk', 'https://www.coindesk.com/arc/outboundfeeds/rss/'],
+  ['Decrypt', 'https://decrypt.co/feed'],
+  ['CryptoSlate', 'https://cryptoslate.com/feed/'],
   ['FXStreet', 'https://www.fxstreet.com/rss/news'],
   ['ForexLive', 'https://www.forexlive.com/feed/news'],
+  ['Investing.com', 'https://www.investing.com/rss/news.rss'],
+  ['CNBC', 'https://www.cnbc.com/id/10000664/device/rss/rss.html'],
+  ['Yahoo Finance', 'https://finance.yahoo.com/news/rssindex'],
 ]
-const FX_URL = 'https://open.er-api.com/v6/latest/USD'
+const PROXIES = [
+  (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+  (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+]
 const GREEN = '#3DDC97'
 const RED = '#F6465D'
 const AMBER = '#FBBF24'
@@ -38,6 +49,7 @@ const FOREX = ('EUR/USD GBP/USD USD/JPY USD/CHF AUD/USD USD/CAD NZD/USD EUR/GBP 
   .map((p) => ({ pair: p, name: p, type: 'forex', tv: `FX:${p.replace('/', '')}` }))
 const PAIRS = [...CRYPTO, ...FOREX]
 const BY_PAIR = Object.fromEntries(PAIRS.map((p) => [p.pair, p]))
+const BN_TO_PAIR = Object.fromEntries(CRYPTO.map((p) => [p.bn, p.pair]))
 
 const container = { hidden: {}, show: { transition: { staggerChildren: 0.07, delayChildren: 0.04 } } }
 const item = { hidden: { opacity: 0, y: 14 }, show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } } }
@@ -86,11 +98,35 @@ const ago = (ts) => {
   const m = Math.max(1, Math.floor((Date.now() / 1000 - ts) / 60))
   return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`
 }
+const tmo = (ms = 6000) => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined)
+const getJson = async (url, ms = 6000) => {
+  const r = await fetch(url, { signal: tmo(ms) })
+  if (!r.ok) throw new Error(`http ${r.status}`)
+  return r.json()
+}
 
-// Entry price is not returned by the API, so we remember the market price at the moment of entry.
+/* The API does not return an entry price, so the live market price is captured when the trade opens and kept
+   per trade in a tiny external store (memory + localStorage). Components subscribe with useSyncExternalStore,
+   so nothing reads or writes refs during render. */
 const entryKey = (id) => `tradeEntry:${id}`
-const getEntry = (id) => { try { return num(localStorage.getItem(entryKey(id))) } catch { return 0 } }
-const setEntry = (id, p) => { try { if (p) localStorage.setItem(entryKey(id), String(p)) } catch { /* ignore */ } }
+const entryMem = {}
+const entrySubs = new Set()
+const getEntry = (id) => {
+  if (entryMem[id]) return entryMem[id]
+  try {
+    const v = num(localStorage.getItem(entryKey(id)))
+    if (v) entryMem[id] = v
+    return v
+  } catch { return 0 }
+}
+const setEntry = (id, p) => {
+  if (!p) return
+  entryMem[id] = p
+  try { localStorage.setItem(entryKey(id), String(p)) } catch { /* ignore */ }
+  entrySubs.forEach((f) => f())
+}
+const subscribeEntry = (f) => { entrySubs.add(f); return () => { entrySubs.delete(f) } }
+const useEntry = (id) => useSyncExternalStore(subscribeEntry, () => getEntry(id), () => 0)
 
 function describeError(err, fallback) {
   const res = err?.response
@@ -115,44 +151,157 @@ function describeError(err, fallback) {
 
 /* ───────────── LIVE PRICES ───────────── */
 
-let fxCache = { at: 0, rates: null }
+const bnTicker = (j) => ({ price: num(j.lastPrice), change: num(j.priceChangePercent), high: num(j.highPrice), low: num(j.lowPrice), vol: num(j.quoteVolume) })
+
+// Crypto REST sources, tried in order (the last one that worked is tried first next time).
+const CRYPTO_SOURCES = [
+  async (m) => bnTicker(await getJson(`https://api.binance.com/api/v3/ticker/24hr?symbol=${m.bn}`)),
+  async (m) => bnTicker(await getJson(`https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${m.bn}`)),
+  async (m) => {
+    const j = await getJson(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${m.bn}`)
+    const d = j?.result?.list?.[0]
+    return { price: num(d?.lastPrice), change: num(d?.price24hPcnt) * 100, high: num(d?.highPrice24h), low: num(d?.lowPrice24h), vol: num(d?.turnover24h) }
+  },
+  async (m) => {
+    const j = await getJson(`https://www.okx.com/api/v5/market/ticker?instId=${m.name}-USDT`)
+    const d = j?.data?.[0]
+    const last = num(d?.last), open = num(d?.open24h)
+    return { price: last, change: open ? ((last - open) / open) * 100 : 0, high: num(d?.high24h), low: num(d?.low24h), vol: num(d?.volCcy24h) }
+  },
+  async (m) => {
+    const j = await getJson(`https://min-api.cryptocompare.com/data/pricemultifull?fsyms=${m.name}&tsyms=USD`)
+    const d = j?.RAW?.[m.name]?.USD
+    return { price: num(d?.PRICE), change: num(d?.CHANGEPCT24HOUR), high: num(d?.HIGH24HOUR), low: num(d?.LOW24HOUR), vol: num(d?.VOLUME24HOURTO) }
+  },
+  async (m) => {
+    const j = await getJson(`https://api.coinbase.com/v2/prices/${m.name}-USD/spot`)
+    return { price: num(j?.data?.amount) }
+  },
+  async (m) => { // last resort: Binance through a CORS proxy
+    const r = await fetch(PROXIES[0](`https://api.binance.com/api/v3/ticker/24hr?symbol=${m.bn}`), { signal: tmo(8000) })
+    if (!r.ok) throw new Error('proxy')
+    return bnTicker(await r.json())
+  },
+]
+let cryptoPref = 0
+async function fetchCrypto(meta) {
+  let lastErr
+  for (let k = 0; k < CRYPTO_SOURCES.length; k++) {
+    const i = (cryptoPref + k) % CRYPTO_SOURCES.length
+    try {
+      const t = await CRYPTO_SOURCES[i](meta)
+      if (t && t.price > 0) { cryptoPref = i; return t }
+    } catch (e) { lastErr = e }
+  }
+  throw lastErr || new Error('price')
+}
+
+// Forex: daily base rates (several fallbacks) overlaid with live USDT-quoted rates for EUR, GBP, AUD and TRY.
+const FX_SOURCES = [
+  async () => (await getJson('https://open.er-api.com/v6/latest/USD')).rates,
+  async () => ({ ...(await getJson('https://api.frankfurter.app/latest?from=USD')).rates, USD: 1 }),
+  async () => {
+    const j = await getJson('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json')
+    return Object.fromEntries(Object.entries(j?.usd || {}).map(([k, v]) => [k.toUpperCase(), v]))
+  },
+]
+// [currency, binance symbol, symbol is already "per USD"]
+const FX_LIVE = [['EUR', 'EURUSDT', false], ['GBP', 'GBPUSDT', false], ['AUD', 'AUDUSDT', false], ['TRY', 'USDTTRY', true]]
+let fxBase = { at: 0, rates: null }
+let fxMix = { at: 0, rates: null }
+
+async function fxLive() {
+  const q = encodeURIComponent(JSON.stringify(FX_LIVE.map((x) => x[1])))
+  for (const host of ['https://api.binance.com', 'https://data-api.binance.vision']) {
+    try {
+      const j = await getJson(`${host}/api/v3/ticker/price?symbols=${q}`, 5000)
+      const out = {}
+      ;(Array.isArray(j) ? j : []).forEach((x) => {
+        const f = FX_LIVE.find((r) => r[1] === x.symbol)
+        const p = num(x.price)
+        if (f && p > 0) out[f[0]] = f[2] ? p : 1 / p
+      })
+      if (Object.keys(out).length) return out
+    } catch { /* try next host */ }
+  }
+  return {}
+}
+
 async function fxRates() {
-  if (fxCache.rates && Date.now() - fxCache.at < 60000) return fxCache.rates
-  const r = await fetch(FX_URL)
-  const j = await r.json()
-  fxCache = { at: Date.now(), rates: j.rates }
-  return j.rates
+  if (fxMix.rates && Date.now() - fxMix.at < 4000) return fxMix.rates
+  if (!fxBase.rates || Date.now() - fxBase.at > 600000) {
+    for (const src of FX_SOURCES) {
+      try {
+        const r = await src()
+        if (r && r.EUR) { fxBase = { at: Date.now(), rates: { ...r } }; break }
+      } catch { /* try next source */ }
+    }
+  }
+  if (!fxBase.rates) throw new Error('fx')
+  const live = await fxLive()
+  const rates = { ...fxBase.rates, ...live }
+  if (!rates.CNH && rates.CNY) rates.CNH = rates.CNY
+  fxMix = { at: Date.now(), rates }
+  return rates
 }
 
 async function fetchPrice(p) {
   const meta = BY_PAIR[p]
   if (!meta) return null
-  if (meta.type === 'crypto') {
-    const r = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${meta.bn}`)
-    const j = await r.json()
-    return { price: num(j.lastPrice), change: num(j.priceChangePercent), high: num(j.highPrice), low: num(j.lowPrice), vol: num(j.quoteVolume) }
-  }
+  if (meta.type === 'crypto') return fetchCrypto(meta)
   const [b, q] = p.split('/')
   const rates = await fxRates()
-  const price = (b === 'USD' ? 1 : 1 / rates[b]) * (q === 'USD' ? 1 : rates[q])
-  return { price, change: null }
+  const rb = b === 'USD' ? 1 : rates[b]
+  const rq = q === 'USD' ? 1 : rates[q]
+  if (!rb || !rq) throw new Error('rate')
+  return { price: rq / rb, change: null }
 }
 
-function useLivePrices(pairs, every = 5000) {
+// Real-time crypto ticks (about once a second) over Binance WebSocket. REST polling keeps running as a backup.
+function useCryptoStream(key, onTick) {
+  const ck = key.split(',').filter((p) => BY_PAIR[p]?.type === 'crypto').join(',')
+  useEffect(() => {
+    if (!ck || typeof WebSocket === 'undefined') return undefined
+    const hosts = ['wss://stream.binance.com:9443', 'wss://data-stream.binance.vision']
+    const streams = ck.split(',').map((p) => `${BY_PAIR[p].bn.toLowerCase()}@miniTicker`).join('/')
+    let ws, retry, tries = 0, live = true
+    const open = () => {
+      try { ws = new WebSocket(`${hosts[tries % hosts.length]}/stream?streams=${streams}`) } catch { return }
+      ws.onopen = () => { tries = 0 }
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data)?.data
+          const pair = d?.s && BN_TO_PAIR[d.s]
+          const price = num(d?.c)
+          const o = num(d?.o)
+          if (pair && price > 0) onTick(pair, { price, change: o ? ((price - o) / o) * 100 : 0, high: num(d.h), low: num(d.l), vol: num(d.q) })
+        } catch { /* ignore malformed frame */ }
+      }
+      ws.onclose = () => { if (live && tries < 8) { tries += 1; retry = setTimeout(open, Math.min(20000, 1000 * 2 ** tries)) } }
+      ws.onerror = () => { try { ws.close() } catch { /* ignore */ } }
+    }
+    open()
+    return () => { live = false; clearTimeout(retry); try { ws?.close() } catch { /* ignore */ } }
+  }, [ck, onTick])
+}
+
+function useLivePrices(pairs, every = PRICE_POLL_MS) {
   const [map, setMap] = useState({})
   const key = [...new Set(pairs)].sort().join(',')
+  const merge = useCallback((pair, tick) => setMap((m) => ({ ...m, [pair]: { ...m[pair], ...tick } })), [])
   useEffect(() => {
     if (!key) return undefined
     let live = true
     const run = async () => {
       const list = key.split(',')
       const res = await Promise.all(list.map((p) => fetchPrice(p).catch(() => null)))
-      if (live) setMap((m) => { const n = { ...m }; list.forEach((p, i) => { if (res[i]) n[p] = res[i] }); return n })
+      if (live) setMap((m) => { const n = { ...m }; list.forEach((p, i) => { if (res[i]?.price > 0) n[p] = { ...n[p], ...res[i] } }); return n })
     }
     run()
     const id = setInterval(run, every)
     return () => { live = false; clearInterval(id) }
   }, [key, every])
+  useCryptoStream(key, merge)
   return map
 }
 
@@ -337,7 +486,7 @@ function Hero({ pair, onOpenPicker, tick, refreshKey }) {
 
 /* ───────────── TRADE FORM ───────────── */
 
-function TradeForm({ cfg, summary, initialPair, onClose, onOpened }) {
+function TradeForm({ cfg, summary, initialPair, getLive, onClose, onOpened }) {
   const maxLev = num(cfg?.max_leverage) || 100
   const durations = cfg?.durations_hours?.length ? cfg.durations_hours : [6, 12, 24]
   const minAmt = num(cfg?.min_amount) || 10
@@ -366,11 +515,14 @@ function TradeForm({ cfg, summary, initialPair, onClose, onOpened }) {
       const body = { pair, side, amount: amt.toFixed(2), leverage: lev, duration_hours: dur }
       if (num(tp) > 0) body.take_profit_pct = num(tp).toFixed(2)
       if (num(sl) > 0) body.stop_loss_pct = num(sl).toFixed(2)
-      const snap = await fetchPrice(pair).catch(() => null)
+      // Take the live price at the same moment the trade is sent: this becomes the entry price.
+      const snapP = fetchPrice(pair).catch(() => null)
       const res = await api.post('/api/trades/', body, SEND_IDEMPOTENCY_KEY ? { headers: { 'Idempotency-Key': keyRef.current } } : undefined)
       const d = res.data?.data
       if (!d?.id) { setErr({ message: 'We could not read your trade details. Check your active trades.' }); return }
-      if (snap?.price) setEntry(d.id, snap.price)
+      const snap = await snapP
+      const entryPx = snap?.price || getLive?.(pair)?.price || 0
+      if (!getEntry(d.id)) setEntry(d.id, entryPx) // on an idempotent replay the original entry is kept
       onOpened(d)
     } catch (ex) {
       setErr(describeError(ex, 'We could not open your trade. Please try again.'))
@@ -541,17 +693,24 @@ async function shareTrade(t, m) {
 
 /* ───────────── ACTIVE TRADE ───────────── */
 
-const pnlFmt = (v) => signed(v)
+const pctFmt = (v) => `${signed(v)}%`
 const amtFmt = (v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}`
 
 function ActiveTrade({ t, tick, now, reduce }) {
   const [toast, setToast] = useState('')
   const [sharing, setSharing] = useState(false)
   const cur = tick?.price || 0
-  let entry = getEntry(t.id)
-  if (!entry && cur) { setEntry(t.id, cur); entry = cur }
+
+  // Entry price = live price captured when the trade opened (kept in the external entry store).
+  // If none was stored (e.g. trade opened on another device), lock in the first live price we see.
+  const entry = useEntry(t.id)
+  useEffect(() => {
+    if (!getEntry(t.id) && cur) setEntry(t.id, cur)
+  }, [t.id, cur])
+
   const dir = t.side === 'buy' ? 1 : -1
-  const pnlPct = entry && cur ? dir * ((cur - entry) / entry) * 100 * t.leverage : 0
+  const rawPct = entry && cur ? dir * ((cur - entry) / entry) * 100 * num(t.leverage) : 0
+  const pnlPct = Math.max(-100, rawPct) // you cannot lose more than your margin
   const pnlAmt = (num(t.amount) * pnlPct) / 100
   const win = pnlPct >= 0
   const closeAt = new Date(t.scheduled_close_at).getTime()
@@ -561,6 +720,7 @@ function ActiveTrade({ t, tick, now, reduce }) {
   // Time is up but staff have not set the result yet (server flag, with the local clock as a fallback).
   const awaiting = Boolean(t.awaiting_settlement) || closeAt <= now
   const color = awaiting ? AMBER : win ? GREEN : RED
+  const noPrice = !entry || !cur
 
   const share = async () => {
     setSharing(true)
@@ -594,25 +754,29 @@ function ActiveTrade({ t, tick, now, reduce }) {
         <div className="mt-3 flex items-center gap-3 rounded-xl bg-amber-400/10 px-3.5 py-3.5" role="status">
           <Loader2 className="h-5 w-5 shrink-0 animate-spin text-amber-300" aria-hidden="true" />
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-amber-200">Awaiting result</p>
+            <p className="text-sm font-semibold text-amber-200">Computing Trade Results...</p>
             <p className="mt-0.5 text-[12px] leading-relaxed text-amber-100/70">
               Your trade period has ended. We are confirming the result and will update your balance shortly.
             </p>
           </div>
         </div>
       ) : (
-        <div className="mt-3 flex items-end justify-between gap-3 rounded-xl bg-[#0E1822] px-3.5 py-3">
-          <div>
-            <p className="text-[11px] text-slate-400">Market estimate (not final)</p>
+        <div className="mt-3 rounded-xl bg-[#0E1822] px-3.5 py-3">
+          <div className="flex items-end justify-between gap-3">
             <motion.p animate={{ scale: reduce ? 1 : [1, 1.04, 1] }} transition={{ duration: 0.5 }} key={Math.round(pnlAmt * 100)}
               className="font-mono text-2xl font-semibold tabular-nums sm:text-3xl" style={{ color }}>
               <AnimNum value={pnlAmt} fmt={amtFmt} />
             </motion.p>
+            <p className="flex items-center gap-1 font-mono text-lg font-semibold tabular-nums" style={{ color }}>
+              {win ? <TrendingUp className="h-4 w-4" aria-hidden="true" /> : <TrendingDown className="h-4 w-4" aria-hidden="true" />}
+              <AnimNum value={pnlPct} fmt={pctFmt} />
+            </p>
           </div>
-          <p className="flex items-center gap-1 font-mono text-lg font-semibold tabular-nums" style={{ color }}>
-            {win ? <TrendingUp className="h-4 w-4" aria-hidden="true" /> : <TrendingDown className="h-4 w-4" aria-hidden="true" />}
-            <AnimNum value={pnlPct} fmt={(v) => `${pnlFmt(v)}%`} />
-          </p>
+          {noPrice && (
+            <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-400" role="status">
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />Fetching live price…
+            </p>
+          )}
         </div>
       )}
 
@@ -626,7 +790,7 @@ function ActiveTrade({ t, tick, now, reduce }) {
         <div className="flex items-center justify-between text-[12px]">
           <span className="flex items-center gap-1.5 text-slate-400"><Clock className="h-3.5 w-3.5" aria-hidden="true" />{awaiting ? 'Status' : 'Result due in'}</span>
           {awaiting
-            ? <span className="font-semibold text-amber-300">Processing result…</span>
+            ? <span className="font-semibold text-amber-300">Computing Trade Results...</span>
             : <span className="font-mono font-semibold tabular-nums text-white" role="timer">{hms(left)}</span>}
         </div>
         <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
@@ -648,7 +812,7 @@ function SettledNotice({ t, onDismiss }) {
       className="flex items-start gap-3 rounded-xl px-3.5 py-3" style={{ background: `${c}1A` }} role="status">
       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" style={{ color: c }} aria-hidden="true" />
       <div className="min-w-0 flex-1 text-[13px] text-slate-100">
-        <p className="font-semibold">{t.pair} trade settled: <span style={{ color: c }}>{profit ? 'Profit' : 'Loss'} {amtFmt(num(t.pnl_amount))} ({pnlFmt(num(t.pnl_pct))}%)</span></p>
+        <p className="font-semibold">{t.pair} trade settled: <span style={{ color: c }}>{profit ? 'Profit' : 'Loss'} {amtFmt(num(t.pnl_amount))} ({pctFmt(num(t.pnl_pct))})</span></p>
         <p className="mt-0.5 text-[12px] text-slate-400">Ref {t.reference}. Your margin was released and your balance has been updated.</p>
       </div>
       <button type="button" onClick={onDismiss} aria-label="Dismiss" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-white/10 hover:text-white"><X className="h-3.5 w-3.5" /></button>
@@ -658,71 +822,132 @@ function SettledNotice({ t, onDismiss }) {
 
 /* ───────────── NEWS ───────────── */
 
-// Shown only when every live feed fails, so the section is never empty or broken.
-const TIPS = [
-  ['Leverage multiplies losses as fast as gains', 'At 10x, a 5% move against you is a 50% hit to your margin. Start low until your strategy proves itself.', 'Leverage'],
-  ['Check the economic calendar before forex entries', 'Rate decisions, CPI and jobs data can move pairs by dozens of pips in minutes. Avoid opening right before them.', 'Forex'],
-  ['Trade with the higher-timeframe trend', 'Confirm direction on the 4H or daily chart, then time the entry on the 15m or 1H. Counter-trend trades need a clear reason.', 'Analysis'],
-  ['Crypto never closes, but liquidity does', 'Weekend and late-night sessions are thinner, so spreads widen and wicks get sharper. Keep your size smaller then.', 'Crypto'],
-  ['Use RSI to read momentum, not to guess tops', 'An overbought RSI can stay overbought in a strong trend. Wait for price to confirm before acting on it.', 'Indicators'],
-  ['Set take profit and stop loss before you enter', 'Deciding exits in advance removes emotion. If the setup has no clear exit, skip it.', 'Discipline'],
-  ['Keep a short trade journal', 'Note the pair, reason, result and mood. After 20 trades the patterns in your wins and losses become obvious.', 'Habits'],
-  ['Correlated pairs double your risk', 'Being long EUR/USD and GBP/USD, or several altcoins, is often the same bet twice. Check what you already have open.', 'Risk'],
-  ['Do not chase a move you missed', 'If price already ran, wait for a pullback to support or resistance. There is always another setup.', 'Discipline'],
-].map(([title, body, tag], i) => ({ id: `tip-${i}`, title, body, tag, source: tag }))
+const httpsUrl = (u) => {
+  if (!u || typeof u !== 'string') return ''
+  if (u.startsWith('//')) return `https:${u}`
+  if (/^http:\/\//i.test(u)) return u.replace(/^http:/i, 'https:')
+  return /^https:\/\//i.test(u) ? u : ''
+}
+const imgFromHtml = (html) => {
+  const m = /<img[^>]+src=["']([^"']+)["']/i.exec(html || '')
+  return m ? httpsUrl(m[1]) : ''
+}
 
-const signal = () => AbortSignal.timeout(8000)
+// Source 1: CryptoCompare news API (keyless, CORS-enabled, always includes an image)
+async function viaCryptoCompare() {
+  const j = await getJson('https://min-api.cryptocompare.com/data/v2/news/?lang=EN', 8000)
+  const list = Array.isArray(j?.Data) ? j.Data : []
+  if (!list.length) throw new Error('cc')
+  return list.slice(0, 20).map((n) => ({
+    title: n.title, url: n.url, img: httpsUrl(n.imageurl),
+    source: n.source_info?.name || n.source || 'CryptoCompare', ts: num(n.published_on),
+  }))
+}
 
+// Source 2: RSS through rss2json
 async function viaJson(url) {
-  const r = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(url)}`, { signal: signal() })
-  const j = await r.json()
+  const j = await getJson(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(url)}`, 8000)
   if (j.status !== 'ok' || !j.items?.length) throw new Error('feed')
   return j.items.map((i) => ({
     title: i.title, url: i.link,
-    img: i.thumbnail || (/image/.test(i.enclosure?.type || '') ? i.enclosure.link : ''),
+    img: httpsUrl(i.thumbnail) || httpsUrl(i.enclosure?.thumbnail) || (/image/.test(i.enclosure?.type || '') ? httpsUrl(i.enclosure.link) : '')
+      || imgFromHtml(i.content) || imgFromHtml(i.description),
     ts: Date.parse(`${String(i.pubDate).replace(' ', 'T')}Z`) / 1000,
   }))
 }
 
-async function viaProxy(url) {
-  const r = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, { signal: signal() })
-  if (!r.ok) throw new Error('proxy')
-  const xml = new DOMParser().parseFromString(await r.text(), 'text/xml')
-  const items = [...xml.querySelectorAll('item')].slice(0, 10).map((n) => {
+// Source 3: RSS through CORS proxies (each proxy tried in turn)
+function parseRss(text) {
+  const xml = new DOMParser().parseFromString(text, 'text/xml')
+  if (xml.querySelector('parsererror')) throw new Error('xml')
+  const items = [...xml.querySelectorAll('item')].slice(0, 15).map((n) => {
     const g = (t) => n.querySelector(t)?.textContent?.trim() || ''
-    const media = n.getElementsByTagName('media:content')[0] || n.getElementsByTagName('media:thumbnail')[0] || n.querySelector('enclosure')
-    return { title: g('title'), url: g('link'), img: media?.getAttribute('url') || '', ts: Date.parse(g('pubDate')) / 1000 }
+    const media = n.getElementsByTagName('media:content')[0] || n.getElementsByTagName('media:thumbnail')[0]
+    const enc = n.querySelector('enclosure')
+    const encoded = n.getElementsByTagName('content:encoded')[0]?.textContent || ''
+    const encImg = enc && /image/.test(enc.getAttribute('type') || 'image') ? enc.getAttribute('url') : ''
+    return {
+      title: g('title'), url: g('link'),
+      img: httpsUrl(media?.getAttribute('url')) || httpsUrl(encImg) || imgFromHtml(encoded) || imgFromHtml(g('description')),
+      ts: Date.parse(g('pubDate')) / 1000,
+    }
   })
   if (!items.length) throw new Error('empty')
   return items
 }
 
+async function viaProxy(url) {
+  let lastErr
+  for (const wrap of PROXIES) {
+    try {
+      const r = await fetch(wrap(url), { signal: tmo(8000) })
+      if (!r.ok) throw new Error('proxy')
+      return parseRss(await r.text())
+    } catch (e) { lastErr = e }
+  }
+  throw lastErr || new Error('proxy')
+}
+
 async function loadFeed([source, url]) {
   let items
   try { items = await viaJson(url) } catch { items = await viaProxy(url) }
-  return items.filter((i) => i.title && i.url).map((i) => ({ ...i, id: i.url, source, ts: i.ts || Date.now() / 1000 }))
+  return items.map((i) => ({ ...i, source }))
 }
 
+const NEWS_SOURCES = [viaCryptoCompare, ...NEWS_FEEDS.map((f) => () => loadFeed(f))]
+
 async function fetchNews() {
-  const settled = await Promise.allSettled(NEWS_FEEDS.map(loadFeed))
-  const lists = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value).filter((l) => l.length)
+  const settled = await Promise.allSettled(NEWS_SOURCES.map((fn) => fn()))
+  const seen = new Set()
+  const lists = settled
+    .filter((r) => r.status === 'fulfilled')
+    .map((r) => r.value
+      .filter((i) => i.title && i.url && !seen.has(i.url) && seen.add(i.url))
+      .map((i) => ({ ...i, id: i.url, ts: i.ts || Date.now() / 1000 })))
+    .filter((l) => l.length)
   if (!lists.length) throw new Error('no news')
+
+  // Prefer stories that have a real image, mixing sources so one outlet doesn't dominate.
+  const imaged = lists.map((l) => l.filter((i) => i.img))
   const out = []
-  for (let i = 0; out.length < 10 && i < 20; i++) lists.forEach((l) => { if (l[i] && out.length < 10) out.push(l[i]) })
+  for (let i = 0; out.length < 10 && i < 20; i++) imaged.forEach((l) => { if (l[i] && out.length < 10) out.push(l[i]) })
+  if (out.length < 6) {
+    // Not enough imaged stories: top up with the newest ones that have no image (shown with a plain tile).
+    const rest = lists.flat().filter((i) => !i.img).sort((a, b) => b.ts - a.ts)
+    rest.slice(0, 6 - out.length).forEach((i) => out.push(i))
+  }
+  if (!out.length) throw new Error('no news')
   return out.sort((a, b) => b.ts - a.ts)
+}
+
+function NewsThumb({ src, source }) {
+  // Remember which src failed instead of resetting state in an effect.
+  const [failed, setFailed] = useState('')
+  const bad = !src || failed === src
+  if (bad) {
+    return (
+      <div className="grid h-20 w-24 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-[#22405A] to-[#0E1822] font-mono text-sm font-bold text-[#3DDC97] sm:h-24 sm:w-32" aria-hidden="true">
+        {String(source || 'N').slice(0, 2).toUpperCase()}
+      </div>
+    )
+  }
+  return (
+    <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailed(src)}
+      className="h-20 w-24 shrink-0 rounded-lg bg-[#0E1822] object-cover sm:h-24 sm:w-32" />
+  )
 }
 
 function News({ refreshKey }) {
   const [items, setItems] = useState(null)
-  const [live, setLive] = useState(true)
+  const [failed, setFailed] = useState(false)
   const [all, setAll] = useState(false)
-  const hasLive = useRef(false)
+  const hasData = useRef(false)
   const load = useCallback(() => {
     fetchNews()
-      .then((list) => { hasLive.current = true; setItems(list); setLive(true) })
-      .catch(() => { if (!hasLive.current) { setItems(TIPS); setLive(false) } })
+      .then((list) => { hasData.current = true; setItems(list); setFailed(false) })
+      .catch(() => { if (!hasData.current) { setItems([]); setFailed(true) } })
   }, [])
-  const retry = () => { setItems(null); load() }
+  const retry = () => { setItems(null); setFailed(false); load() }
   useEffect(() => {
     load()
     const id = setInterval(load, 300000)
@@ -732,33 +957,29 @@ function News({ refreshKey }) {
   return (
     <section aria-label="Market news" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
       <div className="flex items-center justify-between px-0.5">
-        <h2 className="flex items-center gap-2 text-[13px] font-semibold text-white sm:text-sm"><Newspaper className="h-4 w-4 text-[#3DDC97]" aria-hidden="true" />{live ? 'Market news' : 'Trading insights'}</h2>
-        {live
-          ? <span className="flex items-center gap-1.5 text-[11px] text-slate-400"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#3DDC97]" />Live</span>
-          : <button type="button" onClick={retry} className="text-[11px] font-semibold text-[#3DDC97] hover:underline">Try live news again</button>}
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold text-white sm:text-sm"><Newspaper className="h-4 w-4 text-[#3DDC97]" aria-hidden="true" />Market news</h2>
+        {failed
+          ? <button type="button" onClick={retry} className="text-[11px] font-semibold text-[#3DDC97] hover:underline">Try again</button>
+          : <span className="flex items-center gap-1.5 text-[11px] text-slate-400"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#3DDC97]" />Live</span>}
       </div>
-      {!live && <p className="mt-2 px-0.5 text-[11px] text-slate-500">Live headlines could not be reached, so here are some trading insights instead.</p>}
+      {failed && <p className="mt-3 rounded-xl bg-white/[0.04] px-3.5 py-6 text-center text-[12px] text-slate-400">Market news could not be loaded right now. Please try again in a moment.</p>}
       <div className="mt-3 space-y-2">
-        {!items && [0, 1].map((i) => <div key={i} className="h-24 animate-pulse rounded-xl bg-white/[0.04]" />)}
+        {!items && [0, 1].map((i) => <div key={i} className="h-24 animate-pulse rounded-xl bg-white/[0.04] sm:h-28" />)}
         <AnimatePresence initial={false}>
-          {shown.map((n) => {
-            const Tag = n.url ? motion.a : motion.div
-            const link = n.url ? { href: n.url, target: '_blank', rel: 'noopener noreferrer' } : {}
-            return (
-              <Tag key={n.id} layout initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
-                {...link} className="flex gap-3 overflow-hidden rounded-xl bg-white/[0.04] p-2.5 transition-colors hover:bg-white/[0.07]">
-                {n.img ? <img src={n.img} alt="" loading="lazy" className="h-16 w-16 shrink-0 rounded-lg object-cover sm:h-20 sm:w-20" onError={(e) => { e.currentTarget.style.display = 'none' }} />
-                  : !n.url && <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-amber-400/[0.15] text-amber-300"><Lightbulb className="h-[18px] w-[18px]" aria-hidden="true" /></span>}
-                <span className="min-w-0 flex-1">
-                  <span className="line-clamp-2 text-[13px] font-medium text-white sm:text-sm">{n.title}</span>
-                  {n.body && <span className="mt-1 line-clamp-2 block text-[12px] leading-relaxed text-slate-400">{n.body}</span>}
-                  {n.url && (
-                    <span className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-400"><span className="truncate">{n.source}</span>·<span className="shrink-0">{ago(n.ts)}</span><ExternalLink className="ml-auto h-3 w-3 shrink-0" aria-hidden="true" /></span>
-                  )}
+          {shown.map((n) => (
+            <motion.a key={n.id} layout initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+              href={n.url} target="_blank" rel="noopener noreferrer"
+              className="flex gap-3 overflow-hidden rounded-xl bg-white/[0.04] p-2.5 transition-colors hover:bg-white/[0.07]">
+              <NewsThumb src={n.img} source={n.source} />
+              <span className="flex min-w-0 flex-1 flex-col justify-between gap-1.5">
+                <span className="line-clamp-3 text-[13px] font-medium leading-snug text-white sm:text-sm">{n.title}</span>
+                <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <span className="truncate">{n.source}</span>·<span className="shrink-0">{ago(n.ts)}</span>
+                  <ExternalLink className="ml-auto h-3 w-3 shrink-0" aria-hidden="true" />
                 </span>
-              </Tag>
-            )
-          })}
+              </span>
+            </motion.a>
+          ))}
         </AnimatePresence>
       </div>
       {items && items.length > 2 && (
@@ -848,6 +1069,11 @@ export default function Trade() {
   const pairs = useMemo(() => [pair, ...(trades || []).map((t) => t.pair)], [pair, trades])
   const prices = useLivePrices(pairs)
 
+  // Latest prices for event handlers (the ref is only written in an effect and only read in handlers).
+  const pricesRef = useRef({})
+  useEffect(() => { pricesRef.current = prices }, [prices])
+  const getLive = useCallback((p) => pricesRef.current[p], [])
+
   const onOpened = (d) => {
     setFormOpen(false)
     prevIds.current = [d.id, ...prevIds.current.filter((id) => id !== d.id)]
@@ -933,7 +1159,7 @@ export default function Trade() {
         <PairList value={pair} onPick={(p) => { setPair(p); setPicker(false) }} />
       </Sheet>
       <Sheet open={formOpen} onClose={() => setFormOpen(false)} title="Enter a trade">
-        {formOpen && <TradeForm cfg={cfg} summary={summary} initialPair={pair} onClose={() => setFormOpen(false)} onOpened={onOpened} />}
+        {formOpen && <TradeForm cfg={cfg} summary={summary} initialPair={pair} getLive={getLive} onClose={() => setFormOpen(false)} onOpened={onOpened} />}
       </Sheet>
     </div>
   )
