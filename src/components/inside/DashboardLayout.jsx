@@ -1,11 +1,11 @@
 // src/components/Inside/DashboardLayout.jsx
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { AlertCircle, Loader2, LogOut, Menu, Settings } from 'lucide-react'
+import { AlertCircle, ChevronDown, Loader2, LogOut, Menu, Settings } from 'lucide-react'
 import api from '../Api'
 import Sidebar, { TierBadge } from './Sidebar'
-import { NAV_ITEMS, SETTINGS_ITEM, firstNameOf } from './Navconfig'
+import { DESKTOP_NAV, SETTINGS_ITEM, firstNameOf } from './Navconfig'
 
 const PROFILE_URL = '/dashboard/profile'
 const SESSION_KEYS = ['accessToken', 'refreshToken', 'user', 'isAuthenticated']
@@ -27,6 +27,117 @@ function ProfileIcon() {
 
 const iconBtn =
   'grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-slate-300 transition-colors hover:border-white/25 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:h-9 lg:w-9 xl:h-10 xl:w-10'
+
+// Desktop link styles: compact on lg, a little roomier on xl and wider
+const desktopLink = (isActive) =>
+  `inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:gap-2 xl:px-3 xl:py-2 xl:text-sm ${
+    isActive ? 'bg-white/[0.08] text-white' : 'text-slate-400 hover:bg-white/[0.04] hover:text-white'
+  }`
+
+/* Desktop dropdown (e.g. Wallet): opens on mouse hover or on click/tap */
+function NavDropdown({ item, reduce }) {
+  const { pathname } = useLocation()
+  const [openAt, setOpenAt] = useState(null)
+  const open = openAt === pathname
+  const wrapRef = useRef(null)
+  const Icon = item.icon
+
+  const isActive = item.children.some((c) => pathname === c.to || pathname.startsWith(`${c.to}/`))
+
+  const setOpen = useCallback(
+  (next) => setOpenAt((prev) => ((typeof next === 'function' ? next(prev === pathname) : next) ? pathname : null)),
+  [pathname],
+)
+
+  // Close on outside click / Escape
+  useEffect(() => {
+    if (!open) return undefined
+    const onDown = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  // Hover only applies to real mice, so touch taps don't open then instantly close it
+  const onEnter = (e) => {
+    if (e.pointerType === 'mouse') setOpen(true)
+  }
+  const onLeave = (e) => {
+    if (e.pointerType === 'mouse') setOpen(false)
+  }
+
+  return (
+    <div ref={wrapRef} className="relative" onPointerEnter={onEnter} onPointerLeave={onLeave}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="true"
+        aria-expanded={open}
+        className={desktopLink(isActive || open)}
+      >
+        <Icon
+          className={`h-3.5 w-3.5 shrink-0 xl:h-4 xl:w-4 ${isActive ? 'text-[#3DDC97]' : ''}`}
+          aria-hidden="true"
+        />
+        {item.label}
+        <ChevronDown
+          className={`h-3 w-3 shrink-0 transition-transform duration-200 xl:h-3.5 xl:w-3.5 ${open ? 'rotate-180' : ''}`}
+          aria-hidden="true"
+        />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          // The pt-2 wrapper bridges the gap so the hover doesn't drop between button and menu
+          <motion.div
+            initial={reduce ? false : { opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+            className="absolute left-0 top-full z-40 pt-2"
+          >
+            <div className="min-w-[11rem] rounded-xl border border-white/10 bg-[#14212D] p-1.5 shadow-2xl shadow-black/50">
+              {item.children.map((child) => {
+                const ChildIcon = child.icon
+                return (
+                  <NavLink
+                    key={child.to}
+                    to={child.to}
+                    end={child.end}
+                    onClick={() => setOpen(false)}
+                    className={({ isActive: a }) =>
+                      `flex items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:text-sm ${
+                        a ? 'bg-white/[0.08] text-white' : 'text-slate-400 hover:bg-white/[0.05] hover:text-white'
+                      }`
+                    }
+                  >
+                    {({ isActive: a }) => (
+                      <>
+                        <ChildIcon
+                          className={`h-4 w-4 shrink-0 ${a ? 'text-[#3DDC97]' : ''}`}
+                          aria-hidden="true"
+                        />
+                        {child.label}
+                      </>
+                    )}
+                  </NavLink>
+                )
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
 
 export default function DashboardLayout({ children }) {
   const reduce = useReducedMotion()
@@ -123,12 +234,6 @@ export default function DashboardLayout({ children }) {
 
   const firstName = user ? firstNameOf(user) : ''
 
-  // Desktop links: compact on lg, a little roomier on xl and wider
-  const desktopLink = (isActive) =>
-    `inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:gap-2 xl:px-3 xl:py-2 xl:text-sm ${
-      isActive ? 'bg-white/[0.08] text-white' : 'text-slate-400 hover:bg-white/[0.04] hover:text-white'
-    }`
-
   return (
     <div className="min-h-screen bg-[#0E1822] text-slate-300">
       <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0E1822]/90 backdrop-blur">
@@ -181,7 +286,10 @@ export default function DashboardLayout({ children }) {
             </div>
 
             <nav aria-label="Dashboard" className="hidden items-center gap-0.5 lg:flex xl:gap-1">
-              {NAV_ITEMS.map((item) => {
+              {DESKTOP_NAV.map((item) => {
+                if (item.children) {
+                  return <NavDropdown key={item.label} item={item} reduce={reduce} />
+                }
                 const Icon = item.icon
                 return (
                   <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => desktopLink(isActive)}>
