@@ -24,6 +24,7 @@ export const NAV_ITEMS = [
 ]
 
 // Used by the desktop header only. An item with `children` renders as a dropdown.
+// An item with `badge` shows a small animated tag on top of its link.
 export const DESKTOP_NAV = [
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard, end: true },
   { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
@@ -38,7 +39,7 @@ export const DESKTOP_NAV = [
   },
   { label: 'Loan', to: '/dashboard/loan', icon: Landmark },
   { label: 'Referrals', to: '/dashboard/referrals', icon: Users },
-  { label: 'Signals', to: '/dashboard/signals', icon: Signal },
+  { label: 'Signals', to: '/dashboard/signals', icon: Signal, badge: 'Plus +' },
 ]
 
 export const SETTINGS_ITEM = { label: 'Settings', to: '/dashboard/settings', icon: Settings }
