@@ -1,6 +1,7 @@
 // src/pages/inside/Deposit.jsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { createPortal } from 'react-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
@@ -13,7 +14,9 @@ import {
   EyeOff,
   Info,
   Loader2,
+  TrendingUp,
   Wallet,
+  X,
 } from 'lucide-react'
 import api from '../../components/Api'
 
@@ -30,6 +33,9 @@ const DEFAULT_DECIMALS = 6
 const DEFAULT_REFRESH_SECONDS = 30
 const STEPS = ['Amount', 'Payment', 'Review']
 const PHASE_INDEX = { form: 0, pay: 1, review: 2 }
+
+// Network preselected when the user arrives from the Signals page
+const SIGNAL_NETWORK = 'bep20'
 
 // QR images live in /public and are named after the network value (bep20.jfif, btc.jfif, eth.jfif ...)
 const QR_EXTENSIONS = ['jfif', 'png', 'jpg', 'jpeg', 'webp']
@@ -155,6 +161,31 @@ function readHidden() {
     return localStorage.getItem(HIDE_KEY) === '1'
   } catch {
     return false
+  }
+}
+
+// Reads the signal sent by the Signals page through router state. Returns null when the
+// user did not come from there (or the data is unusable), so nothing special happens.
+function readSignal(state) {
+  const s = state?.fromSignal
+  if (!s || !(num(s.usdt) > 0)) return null
+  return {
+    id: s.id,
+    name: String(s.name || 'trading signal'),
+    usd: num(s.usd),
+    usdt: trimZeros(String(s.usdt)),
+  }
+}
+
+// Clears the router state so a refresh of this page does not replay the signal pre-fill
+function clearSignalState() {
+  try {
+    const st = window.history.state
+    if (st && typeof st === 'object' && st.usr) {
+      window.history.replaceState({ ...st, usr: null }, '')
+    }
+  } catch {
+    /* ignore, worst case the pop-up shows again after a refresh */
   }
 }
 
@@ -439,6 +470,132 @@ function QrImage({ network }) {
         <p className="px-3 text-center text-xs text-slate-600">QR code unavailable. Copy the address below instead.</p>
       )}
     </div>
+  )
+}
+
+/* ────────────────────────────────────────────────
+   SIGNAL PURCHASE POP-UP (only shown when arriving from the Signals page)
+──────────────────────────────────────────────── */
+
+function SignalNoticeModal({ signal, onClose, reduce }) {
+  const okRef = useRef(null)
+  const usd = useMemo(() => makeMoney('USD')(signal.usd), [signal.usd])
+
+  // lock page scroll, close on Escape, focus the main button
+  useEffect(() => {
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    okRef.current?.focus()
+    return () => {
+      document.body.style.overflow = prev
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-end justify-center sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="signal-notice-title"
+    >
+      <motion.div
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        onClick={onClose}
+        aria-hidden="true"
+      />
+
+      <motion.div
+        className="relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-[#14212D] shadow-2xl ring-1 ring-white/10 sm:max-w-md sm:rounded-2xl"
+        initial={{ opacity: 0, y: reduce ? 0 : 60, scale: reduce ? 1 : 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1, transition: { type: 'spring', stiffness: 320, damping: 30 } }}
+        exit={{ opacity: 0, y: reduce ? 0 : 40, transition: { duration: 0.18 } }}
+      >
+        <div className="flex shrink-0 items-start gap-3 border-b border-white/[0.06] p-3.5 sm:p-5">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#3DDC97]/[0.15] text-[#3DDC97]">
+            <TrendingUp className="h-5 w-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 id="signal-notice-title" className="text-base font-semibold text-white sm:text-lg">
+              Complete your signal purchase
+            </h2>
+            <p className="mt-0.5 text-[13px] leading-relaxed text-slate-400 sm:text-sm">
+              Proceed with the payment below to complete your purchase of{' '}
+              <span className="font-medium text-slate-200">{signal.name}</span>.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-slate-400 transition-colors hover:bg-white/[0.08] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70"
+          >
+            <X className="h-5 w-5" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain p-3.5 sm:p-5">
+          <dl className="space-y-2.5 rounded-xl bg-[#0E1822] p-3.5 text-[13px] sm:text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-slate-400">Signal</dt>
+              <dd className="min-w-0 break-words text-right font-medium text-white">{signal.name}</dd>
+            </div>
+            {signal.usd > 0 && (
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-slate-400">Price</dt>
+                <dd className="font-mono font-semibold tabular-nums text-white">{usd}</dd>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-slate-400">Network</dt>
+              <dd>
+                <span
+                  className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-bold ${
+                    NETWORK_STYLE[SIGNAL_NETWORK] || NETWORK_FALLBACK
+                  }`}
+                >
+                  USDT · BEP20
+                </span>
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
+              <dt className="font-medium text-slate-200">Amount to send</dt>
+              <dd className="break-all text-right font-mono text-base font-semibold tabular-nums text-[#3DDC97]">
+                {signal.usdt} USDT
+              </dd>
+            </div>
+          </dl>
+
+          <section aria-label="Before you pay" className="rounded-2xl bg-amber-400/[0.08] p-3.5 sm:p-4">
+            <p className="flex items-center gap-2 text-[13px] font-semibold text-amber-200 sm:text-sm">
+              <Info className="h-4 w-4 shrink-0" aria-hidden="true" />
+              Before you continue
+            </p>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-[12px] leading-relaxed text-amber-100/80 sm:text-[13px]">
+              <li>The amount is already filled in for you. Do not change it except you want to pay with a different asset.</li>
+              <li>Tap “Continue to payment”, then send the exact amount to the address shown.</li>
+              <li>Your signal purchase is only complete once the payment is made.</li>
+            </ul>
+          </section>
+        </div>
+
+        <div className="shrink-0 border-t border-white/[0.06] p-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] sm:p-5">
+          <button ref={okRef} type="button" onClick={onClose} className={`${primaryBtn} w-full`}>
+            Got it, proceed with payment
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+      </motion.div>
+    </div>,
+    document.body,
   )
 }
 
@@ -954,6 +1111,13 @@ function ReviewStep({ deposit, secs, reduce }) {
 export default function Deposit() {
   const reduce = useReducedMotion()
   const navigate = useNavigate()
+  const location = useLocation()
+
+  // Set only when the user was sent here from the Signals page, otherwise null
+  const [signalInfo] = useState(() => readSignal(location.state))
+  const signalRef = useRef(signalInfo)
+  const signalDone = useRef(false)
+  const [signalModal, setSignalModal] = useState(false)
 
   // flow
   const [phase, setPhase] = useState('form') // form | pay | review
@@ -1014,8 +1178,28 @@ export default function Deposit() {
       .then((res) => {
         if (!live) return
         const data = res.data?.data
-        if (data && typeof data === 'object') setCfg(data)
-        else setCfgErr('We could not read the deposit settings.')
+        if (data && typeof data === 'object') {
+          setCfg(data)
+
+          // Arrived from the Signals page: prefill the USDT amount, pick USDT BEP20 and show the pop-up.
+          // Runs once, and only if that network is actually usable (so a USDT number never lands in BTC / ETH).
+          const sig = signalRef.current
+          if (sig && !signalDone.current) {
+            signalDone.current = true
+            const bep = (Array.isArray(data.networks) ? data.networks : []).find(
+              (n) =>
+                n.value === SIGNAL_NETWORK &&
+                isNetworkAvailable(n) &&
+                String(n.asset || 'usdt').toLowerCase() === 'usdt',
+            )
+            if (bep) {
+              setNetwork(SIGNAL_NETWORK)
+              setAmount(cleanAmount(sig.usdt, num(bep.decimals) || DEFAULT_DECIMALS))
+              setSignalModal(true)
+            }
+            clearSignalState()
+          }
+        } else setCfgErr('We could not read the deposit settings.')
       })
       .catch((err) => {
         if (live) setCfgErr(loadError(err, 'deposit settings'))
@@ -1084,6 +1268,8 @@ export default function Deposit() {
       return next
     })
   }
+
+  const closeSignalModal = useCallback(() => setSignalModal(false), [])
 
   const currency = wallet?.currency || cfg?.currency || 'USD'
   const money = useMemo(() => makeMoney(currency), [currency])
@@ -1336,6 +1522,13 @@ export default function Deposit() {
           </AnimatePresence>
         </motion.div>
       </motion.div>
+
+      {/* Signal purchase pop-up: only ever opens when the user came from the Signals page */}
+      <AnimatePresence>
+        {signalModal && signalInfo && (
+          <SignalNoticeModal key="signal-notice" signal={signalInfo} onClose={closeSignalModal} reduce={reduce} />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
