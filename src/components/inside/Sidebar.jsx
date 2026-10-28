@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { BadgeCheck, ChevronRight, Lock, LogOut, X } from 'lucide-react'
+import NavBadge from './NavBadge'
 import { KYC_URL, NAV_ITEMS, SETTINGS_ITEM, initialsOf } from './Navconfig'
 
 /* ────────────────────────────────────────────────
@@ -43,7 +44,10 @@ const chipClass = (isActive) =>
     isActive ? 'bg-[#3DDC97] text-[#06231A]' : 'bg-white/[0.06] text-slate-400 group-hover:text-slate-200'
   }`
 
-function NavRow({ item, onNavigate }) {
+// Badge sits inline right after the label (use `ml-auto` instead of `ml-2` to push it to the far right)
+const INLINE_BADGE = 'pointer-events-none relative ml-2 inline-block shrink-0'
+
+function NavRow({ item, onNavigate, reduce }) {
   const Icon = item.icon
   return (
     <NavLink to={item.to} end={item.end} onClick={onNavigate} className={({ isActive }) => rowClass(isActive)}>
@@ -53,6 +57,7 @@ function NavRow({ item, onNavigate }) {
             <Icon className="h-4 w-4" aria-hidden="true" />
           </span>
           <span>{item.label}</span>
+          {item.badge && <NavBadge label={item.badge} reduce={reduce} className={INLINE_BADGE} />}
         </>
       )}
     </NavLink>
@@ -179,7 +184,7 @@ export default function Sidebar({ open, onClose, user, loading, onLogout }) {
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ duration: 0.25, delay: 0.1 + i * 0.04, ease: 'easeOut' }}
                 >
-                  <NavRow item={item} onNavigate={onClose} />
+                  <NavRow item={item} onNavigate={onClose} reduce={reduce} />
                 </motion.li>
               ))}
             </ul>
@@ -187,7 +192,7 @@ export default function Sidebar({ open, onClose, user, loading, onLogout }) {
 
           {/* ── Bottom: settings + logout ── */}
           <div className="space-y-1 border-t border-white/10 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
-            <NavRow item={SETTINGS_ITEM} onNavigate={onClose} />
+            <NavRow item={SETTINGS_ITEM} onNavigate={onClose} reduce={reduce} />
             <button
               type="button"
               onClick={() => {

@@ -12,7 +12,8 @@ import {
   Wallet,
 } from 'lucide-react'
 
-// Used by the mobile Sidebar (unchanged)
+// Used by the mobile Sidebar.
+// An item with `badge` shows a small animated tag next to its label.
 export const NAV_ITEMS = [
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard, end: true },
   { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
@@ -21,6 +22,7 @@ export const NAV_ITEMS = [
   { label: 'History', to: '/dashboard/transactions', icon: ArrowLeftRight },
   { label: 'Loan', to: '/dashboard/loan', icon: Landmark },
   { label: 'Referrals', to: '/dashboard/referrals', icon: Users },
+  { label: 'Signals', to: '/dashboard/signals', icon: Signal, badge: 'Plus +' },
 ]
 
 // Used by the desktop header only. An item with `children` renders as a dropdown.

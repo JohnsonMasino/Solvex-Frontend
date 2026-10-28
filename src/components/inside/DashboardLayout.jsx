@@ -5,13 +5,11 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { AlertCircle, ChevronDown, Loader2, LogOut, Menu, Settings } from 'lucide-react'
 import api from '../Api'
 import Sidebar, { TierBadge } from './Sidebar'
+import NavBadge from './NavBadge'
 import { DESKTOP_NAV, SETTINGS_ITEM, firstNameOf } from './Navconfig'
 
 const PROFILE_URL = '/dashboard/profile'
 const SESSION_KEYS = ['accessToken', 'refreshToken', 'user', 'isAuthenticated']
-
-// Seconds of rest between each vibration of the nav badge
-const BADGE_SHAKE_PAUSE = 3
 
 // Kept at module level so moving between dashboard pages doesn't
 // flash a loading state each time the layout mounts again.
@@ -37,51 +35,6 @@ const desktopLink = (isActive) =>
     isActive ? 'bg-white/[0.08] text-white' : 'text-slate-400 hover:bg-white/[0.04] hover:text-white'
   }`
 
-/* Small tag on top of a nav link: pops in once, then vibrates every few seconds */
-function NavBadge({ label, reduce }) {
-  return (
-    <motion.span
-      aria-hidden="true"
-      className="pointer-events-none absolute -right-1 -top-2.5 z-10 xl:-right-0.5 xl:-top-3"
-      initial={reduce ? false : { scale: 0, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: 'spring', stiffness: 520, damping: 14, delay: 0.35 }}
-    >
-      {/* soft pulsing glow behind the tag */}
-      {!reduce && (
-        <motion.span
-          className="absolute inset-0 rounded-full bg-[#3DDC97]"
-          animate={{ scale: [1, 1.7], opacity: [0.5, 0] }}
-          transition={{ duration: 1.4, repeat: Infinity, ease: 'easeOut' }}
-        />
-      )}
-
-      {/* the vibration */}
-      <motion.span
-        className="relative block origin-bottom rounded-full bg-gradient-to-r from-[#3DDC97] to-[#5BEBAD] px-1.5 py-px font-mono text-[9px] font-extrabold uppercase leading-tight tracking-wide text-[#06140E] shadow-lg shadow-[#3DDC97]/30 xl:px-2 xl:text-[10px]"
-        animate={
-          reduce
-            ? undefined
-            : {
-                x: [0, -2.5, 2.5, -2, 2, -1, 1, 0],
-                rotate: [0, -12, 12, -9, 9, -4, 4, 0],
-                scale: [1, 1.18, 1.18, 1.12, 1.12, 1.05, 1.05, 1],
-              }
-        }
-        transition={{
-          duration: 0.7,
-          ease: 'easeInOut',
-          delay: 0.9,
-          repeat: Infinity,
-          repeatDelay: BADGE_SHAKE_PAUSE,
-        }}
-      >
-        {label}
-      </motion.span>
-    </motion.span>
-  )
-}
-
 /* Desktop dropdown (e.g. Wallet): opens on mouse hover or on click/tap */
 function NavDropdown({ item, reduce }) {
   const { pathname } = useLocation()
@@ -93,9 +46,9 @@ function NavDropdown({ item, reduce }) {
   const isActive = item.children.some((c) => pathname === c.to || pathname.startsWith(`${c.to}/`))
 
   const setOpen = useCallback(
-  (next) => setOpenAt((prev) => ((typeof next === 'function' ? next(prev === pathname) : next) ? pathname : null)),
-  [pathname],
-)
+    (next) => setOpenAt((prev) => ((typeof next === 'function' ? next(prev === pathname) : next) ? pathname : null)),
+    [pathname],
+  )
 
   // Close on outside click / Escape
   useEffect(() => {
@@ -112,7 +65,7 @@ function NavDropdown({ item, reduce }) {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [open])
+  }, [open, setOpen])
 
   // Hover only applies to real mice, so touch taps don't open then instantly close it
   const onEnter = (e) => {
