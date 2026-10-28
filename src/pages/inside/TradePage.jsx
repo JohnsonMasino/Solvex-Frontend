@@ -37,7 +37,7 @@ const PROXIES = [
   (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
 ]
 const GREEN = '#3DDC97'
-const RED = '#F6465D'
+const RED = '#3DDC97'
 const AMBER = '#FBBF24'
 
 const CRYPTO = ('BTC ETH BNB SOL XRP ADA DOGE TRX TON AVAX LINK DOT MATIC SHIB LTC BCH ATOM UNI XLM ETC FIL APT ARB OP NEAR ' +
@@ -69,7 +69,7 @@ const WEEKEND_MSG = 'Trading is closed for the weekend. You can open new trades 
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 const money = (v) => `$${num(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-const signed = (v, d = 2) => `${v >= 0 ? '+' : '-'}${Math.abs(v).toFixed(d)}`
+const signed = (v, d = 2) => `${v >= 0 ? '+' : '+'}${Math.abs(v).toFixed(d)}`
 const fmtPrice = (p) => {
   if (!p) return '--'
   const d = p >= 1000 ? 2 : p >= 1 ? 4 : p >= 0.01 ? 5 : 8
@@ -694,7 +694,7 @@ async function shareTrade(t, m) {
 /* ───────────── ACTIVE TRADE ───────────── */
 
 const pctFmt = (v) => `${signed(v)}%`
-const amtFmt = (v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}`
+const amtFmt = (v) => `${v >= 0 ? '+' : '+'}$${Math.abs(v).toFixed(2)}`
 
 function ActiveTrade({ t, tick, now, reduce }) {
   const [toast, setToast] = useState('')
