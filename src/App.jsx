@@ -43,6 +43,7 @@ const Transactions = lazy(() => import('./pages/inside/Transactions'))
 const Profile = lazy(() => import('./pages/inside/Profile'))
 const ProfileEdit = lazy(() => import('./pages/inside/ProfileEdit'))
 const Settings = lazy(() => import('./pages/inside/SettingsPage'))
+const Signals = lazy(() => import('./pages/inside/SignalPage'))
 
 export default function App() {
   return (
@@ -87,6 +88,7 @@ export default function App() {
             <Route path="/dashboard/profile" element={<Profile />} />
             <Route path="/dashboard/profile/edit" element={<ProfileEdit />} />
             <Route path="/dashboard/settings" element={<Settings />} />
+            <Route path="/dashboard/signals" element={<Signals />} />
           </Route>
 
           {/* ── 404: any unknown URL ── */}
@@ -96,3 +98,5 @@ export default function App() {
     </div>
   )
 }
+
+// monumentum, premium, breakouts, buying oversold, trend signals, trend reversal, S9 

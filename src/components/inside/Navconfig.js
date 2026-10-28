@@ -1,13 +1,44 @@
 // src/components/Inside/Navconfig.js
-import { Download, Landmark, LayoutDashboard, Settings, TrendingUp, Upload, Users } from 'lucide-react'
+import {
+  ArrowLeftRight,
+  Download,
+  Landmark,
+  LayoutDashboard,
+  Settings,
+  Signal,
+  TrendingUp,
+  Upload,
+  Users,
+  Wallet,
+} from 'lucide-react'
 
+// Used by the mobile Sidebar (unchanged)
 export const NAV_ITEMS = [
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard, end: true },
   { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
   { label: 'Deposit', to: '/dashboard/deposit', icon: Download },
   { label: 'Withdraw', to: '/dashboard/withdraw', icon: Upload },
+  { label: 'History', to: '/dashboard/transactions', icon: ArrowLeftRight },
   { label: 'Loan', to: '/dashboard/loan', icon: Landmark },
   { label: 'Referrals', to: '/dashboard/referrals', icon: Users },
+]
+
+// Used by the desktop header only. An item with `children` renders as a dropdown.
+export const DESKTOP_NAV = [
+  { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard, end: true },
+  { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
+  {
+    label: 'Wallet',
+    icon: Wallet,
+    children: [
+      { label: 'Deposit', to: '/dashboard/deposit', icon: Download },
+      { label: 'Withdraw', to: '/dashboard/withdraw', icon: Upload },
+      { label: 'History', to: '/dashboard/transactions', icon: ArrowLeftRight },
+    ],
+  },
+  { label: 'Loan', to: '/dashboard/loan', icon: Landmark },
+  { label: 'Referrals', to: '/dashboard/referrals', icon: Users },
+  { label: 'Signals', to: '/dashboard/signals', icon: Signal },
 ]
 
 export const SETTINGS_ITEM = { label: 'Settings', to: '/dashboard/settings', icon: Settings }
