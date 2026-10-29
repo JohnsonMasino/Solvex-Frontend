@@ -156,6 +156,30 @@ function InlineError({ message, onRetry }) {
   )
 }
 
+// The user's profile picture (avatar_url from /api/profile/), or their initials
+// when they have no picture yet or the picture fails to load.
+function ProfileAvatar({ url, profile }) {
+  const [failedUrl, setFailedUrl] = useState(null)
+  const showImage = Boolean(url) && failedUrl !== url
+
+  return (
+    <span className="relative grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-full bg-[#1D3042] text-lg font-semibold text-white ring-1 ring-white/10 sm:h-16 sm:w-16 sm:text-xl">
+      {showImage ? (
+        <img
+          src={url}
+          alt="Profile picture"
+          className="h-full w-full object-cover"
+          draggable="false"
+          decoding="async"
+          onError={() => setFailedUrl(url)}
+        />
+      ) : (
+        initialsOf(profile)
+      )}
+    </span>
+  )
+}
+
 function Section({ icon: Icon, title, aside, children }) {
   return (
     <motion.section variants={item} className="rounded-2xl bg-[#14212D] p-4 sm:p-5">
@@ -547,9 +571,7 @@ export default function Profile() {
         <div className="min-w-0 space-y-5">
           <motion.section variants={item} aria-label="Account holder" className="rounded-2xl bg-[#14212D] p-4 sm:p-5">
             <div className="flex items-center gap-3.5">
-              <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-[#1D3042] text-lg font-semibold text-white ring-1 ring-white/10 sm:h-16 sm:w-16 sm:text-xl">
-                {initialsOf(profile)}
-              </span>
+              <ProfileAvatar url={profile.avatar_url} profile={profile} />
               <div className="min-w-0">
                 <p className="truncate text-lg font-semibold leading-tight text-white">{profile.full_name || 'Your account'}</p>
                 <p className="mt-0.5 truncate text-sm text-slate-400">{profile.email}</p>

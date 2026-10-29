@@ -16,6 +16,9 @@ const SESSION_KEYS = ['accessToken', 'refreshToken', 'user', 'isAuthenticated']
 // Kept at module level so moving between dashboard pages doesn't
 // flash a loading state each time the layout mounts again.
 let cachedUser = null
+// The profile picture URL is permanent and a new picture gets a new URL,
+// so it is safe to keep it here. null means "no picture", so the default icon shows.
+let cachedAvatar = null
 
 // Neutral, unisex avatar: head and shoulders on a round background
 function ProfileIcon() {
@@ -25,6 +28,25 @@ function ProfileIcon() {
       <circle cx="16" cy="12.5" r="5" fill="#9FB4C7" />
       <path d="M6.5 27c.8-5 4.9-8 9.5-8s8.7 3 9.5 8a15 15 0 0 1-19 0z" fill="#9FB4C7" />
     </svg>
+  )
+}
+
+// The user's profile picture, or the unisex icon when there is no picture
+// (or when the picture fails to load).
+function Avatar({ url }) {
+  const [failedUrl, setFailedUrl] = useState(null)
+
+  if (!url || failedUrl === url) return <ProfileIcon />
+
+  return (
+    <img
+      src={url}
+      alt=""
+      className="h-full w-full object-cover"
+      draggable="false"
+      decoding="async"
+      onError={() => setFailedUrl(url)}
+    />
   )
 }
 
@@ -147,6 +169,7 @@ export default function DashboardLayout({ children }) {
   const navigate = useNavigate()
 
   const [user, setUser] = useState(cachedUser)
+  const [avatarUrl, setAvatarUrl] = useState(cachedAvatar)
   const [loading, setLoading] = useState(!cachedUser)
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -180,6 +203,26 @@ export default function DashboardLayout({ children }) {
     }
   }, [])
 
+  // Fetch the profile picture. avatar_url is null when the user has no picture yet,
+  // and a failed request simply keeps whatever is already shown (the default icon at first).
+  useEffect(() => {
+    let alive = true
+    api
+      .get('/api/profile/')
+      .then((res) => {
+        if (!alive) return
+        const url = res.data?.data?.avatar_url || null
+        cachedAvatar = url
+        setAvatarUrl(url)
+      })
+      .catch(() => {
+        /* Not critical: the default icon stays */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
   /* ── Logout ── */
   const cancelLogout = useCallback(() => {
     if (busy.current) return
@@ -200,6 +243,7 @@ export default function DashboardLayout({ children }) {
   const finishLogout = () => {
     SESSION_KEYS.forEach((key) => localStorage.removeItem(key))
     cachedUser = null
+    cachedAvatar = null
     resetSignalNotice()
     navigate('/login', { replace: true })
   }
@@ -320,14 +364,14 @@ export default function DashboardLayout({ children }) {
               </nav>
             </div>
 
-            {/* Right: profile icon on mobile, account controls on desktop */}
+            {/* Right: profile picture on mobile, account controls on desktop */}
             <div className="flex items-center justify-end gap-2">
               <Link
                 to={PROFILE_URL}
                 aria-label="Open profile"
                 className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/15 transition-shadow hover:ring-[#3DDC97]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:hidden"
               >
-                <ProfileIcon />
+                <Avatar url={avatarUrl} />
               </Link>
 
               <div className="hidden items-center gap-1.5 lg:flex xl:gap-2">
@@ -336,7 +380,7 @@ export default function DashboardLayout({ children }) {
                   className="flex items-center gap-2 rounded-xl border border-white/10 py-1 pl-1 pr-2 transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:gap-2.5 xl:pr-3"
                 >
                   <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full ring-1 ring-white/10 xl:h-8 xl:w-8">
-                    <ProfileIcon />
+                    <Avatar url={avatarUrl} />
                   </span>
                   {user ? (
                     <span className="min-w-0 text-left">
