@@ -98,5 +98,3 @@ export default function App() {
     </div>
   )
 }
-
-// monumentum, premium, breakouts, buying oversold, trend signals, trend reversal, S9 

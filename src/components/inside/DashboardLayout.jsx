@@ -6,6 +6,8 @@ import { AlertCircle, ChevronDown, Loader2, LogOut, Menu, Settings } from 'lucid
 import api from '../Api'
 import Sidebar, { TierBadge } from './Sidebar'
 import NavBadge from './NavBadge'
+import SignalNotice from './SignalNotice'
+import { resetSignalNotice } from './SignalNoticeStore'
 import { DESKTOP_NAV, SETTINGS_ITEM, firstNameOf } from './Navconfig'
 
 const PROFILE_URL = '/dashboard/profile'
@@ -198,6 +200,7 @@ export default function DashboardLayout({ children }) {
   const finishLogout = () => {
     SESSION_KEYS.forEach((key) => localStorage.removeItem(key))
     cachedUser = null
+    resetSignalNotice()
     navigate('/login', { replace: true })
   }
 
@@ -237,136 +240,142 @@ export default function DashboardLayout({ children }) {
 
   return (
     <div className="min-h-screen bg-[#0E1822] text-slate-300">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0E1822]/90 backdrop-blur">
-        <div className="mx-auto grid h-14 max-w-7xl grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 sm:px-6 lg:h-16 lg:grid-cols-[auto_1fr_auto] lg:gap-3 lg:px-6 xl:gap-6 xl:px-8">
-          {/* Left: hamburger on mobile, logo on desktop */}
-          <div className="flex items-center">
-            <button
-              type="button"
-              onClick={() => setMenuOpen(true)}
-              aria-label="Open menu"
-              aria-expanded={menuOpen}
-              className={`${iconBtn} lg:hidden`}
-            >
-              <Menu className="h-5 w-5" aria-hidden="true" />
-            </button>
-
-            <Link
-              to="/dashboard"
-              aria-label="Solvexmarketinc dashboard"
-              className="hidden items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:flex"
-            >
-              <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#14212D] ring-1 ring-white/10 xl:h-10 xl:w-10">
-                <img src="/Logo_nbg.png" alt="" className="h-6 w-6 object-contain xl:h-7 xl:w-7" draggable="false" />
-              </span>
-              <span className="hidden text-base font-semibold tracking-tight text-white 2xl:block">
-                SOLVE<span className="text-[#FF4D4F]">X</span>
-                <span className="text-[#3DDC97]">MARKETINC</span>
-              </span>
-            </Link>
-          </div>
-
-          {/* Center: name + tier on mobile, nav links on desktop */}
-          <div className="flex min-w-0 justify-center">
-            <div className="min-w-0 max-w-[46vw] text-center lg:hidden">
-              {user ? (
-                <>
-                  <p className="truncate text-sm font-semibold leading-tight text-white">{firstName}</p>
-                  <div className="mt-0.5 flex justify-center">
-                    <TierBadge tier={user.tier} small />
-                  </div>
-                </>
-              ) : loading ? (
-                <div className="flex flex-col items-center gap-1.5" aria-hidden="true">
-                  <div className="h-3.5 w-16 animate-pulse rounded bg-white/10" />
-                  <div className="h-3 w-10 animate-pulse rounded bg-white/[0.06]" />
-                </div>
-              ) : (
-                <p className="text-sm font-semibold text-white">My account</p>
-              )}
-            </div>
-
-            <nav aria-label="Dashboard" className="hidden items-center gap-0.5 lg:flex xl:gap-1">
-              {DESKTOP_NAV.map((item) => {
-                if (item.children) {
-                  return <NavDropdown key={item.label} item={item} reduce={reduce} />
-                }
-                const Icon = item.icon
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.end}
-                    className={({ isActive }) => `${desktopLink(isActive)} ${item.badge ? 'relative' : ''}`}
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <Icon
-                          className={`h-3.5 w-3.5 shrink-0 xl:h-4 xl:w-4 ${isActive ? 'text-[#3DDC97]' : ''}`}
-                          aria-hidden="true"
-                        />
-                        {item.label}
-                        {item.badge && <NavBadge label={item.badge} reduce={reduce} />}
-                      </>
-                    )}
-                  </NavLink>
-                )
-              })}
-            </nav>
-          </div>
-
-          {/* Right: profile icon on mobile, account controls on desktop */}
-          <div className="flex items-center justify-end gap-2">
-            <Link
-              to={PROFILE_URL}
-              aria-label="Open profile"
-              className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/15 transition-shadow hover:ring-[#3DDC97]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:hidden"
-            >
-              <ProfileIcon />
-            </Link>
-
-            <div className="hidden items-center gap-1.5 lg:flex xl:gap-2">
-              <Link
-                to={PROFILE_URL}
-                className="flex items-center gap-2 rounded-xl border border-white/10 py-1 pl-1 pr-2 transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:gap-2.5 xl:pr-3"
-              >
-                <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full ring-1 ring-white/10 xl:h-8 xl:w-8">
-                  <ProfileIcon />
-                </span>
-                {user ? (
-                  <span className="min-w-0 text-left">
-                    <span className="block max-w-[6rem] truncate text-[13px] font-medium leading-tight text-white xl:max-w-[9rem] xl:text-sm">
-                      {firstName}
-                    </span>
-                    <TierBadge tier={user.tier} small />
-                  </span>
-                ) : (
-                  <span className="text-[13px] font-medium text-white xl:text-sm">{loading ? '' : 'My account'}</span>
-                )}
-              </Link>
-
-              <NavLink
-                to={SETTINGS_ITEM.to}
-                aria-label="Settings"
-                title="Settings"
-                className={({ isActive }) => `${iconBtn} ${isActive ? 'border-white/25 bg-white/[0.08] text-white' : ''}`}
-              >
-                <Settings className="h-4 w-4 xl:h-[18px] xl:w-[18px]" aria-hidden="true" />
-              </NavLink>
-
+      {/* Header + signal notice stick together, so the notice is always right under the header line */}
+      <div className="sticky top-0 z-30">
+        <header className="relative z-10 border-b border-white/10 bg-[#0E1822]/90 backdrop-blur">
+          <div className="mx-auto grid h-14 max-w-7xl grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 sm:px-6 lg:h-16 lg:grid-cols-[auto_1fr_auto] lg:gap-3 lg:px-6 xl:gap-6 xl:px-8">
+            {/* Left: hamburger on mobile, logo on desktop */}
+            <div className="flex items-center">
               <button
                 type="button"
-                onClick={() => setConfirmOpen(true)}
-                aria-label="Log out"
-                title="Log out"
-                className={`${iconBtn} hover:border-rose-400/40 hover:text-rose-300`}
+                onClick={() => setMenuOpen(true)}
+                aria-label="Open menu"
+                aria-expanded={menuOpen}
+                className={`${iconBtn} lg:hidden`}
               >
-                <LogOut className="h-4 w-4 xl:h-[18px] xl:w-[18px]" aria-hidden="true" />
+                <Menu className="h-5 w-5" aria-hidden="true" />
               </button>
+
+              <Link
+                to="/dashboard"
+                aria-label="Solvexmarketinc dashboard"
+                className="hidden items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:flex"
+              >
+                <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#14212D] ring-1 ring-white/10 xl:h-10 xl:w-10">
+                  <img src="/Logo_nbg.png" alt="" className="h-6 w-6 object-contain xl:h-7 xl:w-7" draggable="false" />
+                </span>
+                <span className="hidden text-base font-semibold tracking-tight text-white 2xl:block">
+                  SOLVE<span className="text-[#FF4D4F]">X</span>
+                  <span className="text-[#3DDC97]">MARKETINC</span>
+                </span>
+              </Link>
+            </div>
+
+            {/* Center: name + tier on mobile, nav links on desktop */}
+            <div className="flex min-w-0 justify-center">
+              <div className="min-w-0 max-w-[46vw] text-center lg:hidden">
+                {user ? (
+                  <>
+                    <p className="truncate text-sm font-semibold leading-tight text-white">{firstName}</p>
+                    <div className="mt-0.5 flex justify-center">
+                      <TierBadge tier={user.tier} small />
+                    </div>
+                  </>
+                ) : loading ? (
+                  <div className="flex flex-col items-center gap-1.5" aria-hidden="true">
+                    <div className="h-3.5 w-16 animate-pulse rounded bg-white/10" />
+                    <div className="h-3 w-10 animate-pulse rounded bg-white/[0.06]" />
+                  </div>
+                ) : (
+                  <p className="text-sm font-semibold text-white">My account</p>
+                )}
+              </div>
+
+              <nav aria-label="Dashboard" className="hidden items-center gap-0.5 lg:flex xl:gap-1">
+                {DESKTOP_NAV.map((item) => {
+                  if (item.children) {
+                    return <NavDropdown key={item.label} item={item} reduce={reduce} />
+                  }
+                  const Icon = item.icon
+                  return (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      end={item.end}
+                      className={({ isActive }) => `${desktopLink(isActive)} ${item.badge ? 'relative' : ''}`}
+                    >
+                      {({ isActive }) => (
+                        <>
+                          <Icon
+                            className={`h-3.5 w-3.5 shrink-0 xl:h-4 xl:w-4 ${isActive ? 'text-[#3DDC97]' : ''}`}
+                            aria-hidden="true"
+                          />
+                          {item.label}
+                          {item.badge && <NavBadge label={item.badge} reduce={reduce} />}
+                        </>
+                      )}
+                    </NavLink>
+                  )
+                })}
+              </nav>
+            </div>
+
+            {/* Right: profile icon on mobile, account controls on desktop */}
+            <div className="flex items-center justify-end gap-2">
+              <Link
+                to={PROFILE_URL}
+                aria-label="Open profile"
+                className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-white/15 transition-shadow hover:ring-[#3DDC97]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 lg:hidden"
+              >
+                <ProfileIcon />
+              </Link>
+
+              <div className="hidden items-center gap-1.5 lg:flex xl:gap-2">
+                <Link
+                  to={PROFILE_URL}
+                  className="flex items-center gap-2 rounded-xl border border-white/10 py-1 pl-1 pr-2 transition-colors hover:border-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 xl:gap-2.5 xl:pr-3"
+                >
+                  <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full ring-1 ring-white/10 xl:h-8 xl:w-8">
+                    <ProfileIcon />
+                  </span>
+                  {user ? (
+                    <span className="min-w-0 text-left">
+                      <span className="block max-w-[6rem] truncate text-[13px] font-medium leading-tight text-white xl:max-w-[9rem] xl:text-sm">
+                        {firstName}
+                      </span>
+                      <TierBadge tier={user.tier} small />
+                    </span>
+                  ) : (
+                    <span className="text-[13px] font-medium text-white xl:text-sm">{loading ? '' : 'My account'}</span>
+                  )}
+                </Link>
+
+                <NavLink
+                  to={SETTINGS_ITEM.to}
+                  aria-label="Settings"
+                  title="Settings"
+                  className={({ isActive }) => `${iconBtn} ${isActive ? 'border-white/25 bg-white/[0.08] text-white' : ''}`}
+                >
+                  <Settings className="h-4 w-4 xl:h-[18px] xl:w-[18px]" aria-hidden="true" />
+                </NavLink>
+
+                <button
+                  type="button"
+                  onClick={() => setConfirmOpen(true)}
+                  aria-label="Log out"
+                  title="Log out"
+                  className={`${iconBtn} hover:border-rose-400/40 hover:text-rose-300`}
+                >
+                  <LogOut className="h-4 w-4 xl:h-[18px] xl:w-[18px]" aria-hidden="true" />
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
+
+        {/* Eligible users only: purchase prompt, or "active signal" message. Not dismissible. */}
+        <SignalNotice reduce={reduce} />
+      </div>
 
       <Sidebar
         open={menuOpen}
