@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
+  Camera,
   CheckCircle2,
   ChevronDown,
   Info,
@@ -13,6 +14,8 @@ import {
   MapPin,
   Phone,
   Save,
+  Trash2,
+  Upload,
   User,
 } from 'lucide-react'
 import api from '../../components/Api'
@@ -44,6 +47,16 @@ const SEX_OPTIONS = [
 ]
 
 const PHONE_RE = /^\+?[0-9][0-9\s-]{6,19}$/
+
+// Profile picture rules (the server checks the real file content again)
+const PHOTO_MAX_MB = 5
+const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']
+const PHOTO_ACCEPT = 'image/*,.heic,.heif'
+const PHOTO_UPLOAD_TIMEOUT_MS = 60000
+
+// Other parts of the app (for example the dashboard header) can listen for this
+// event to refresh the picture without reloading. detail.url is the new avatar_url or null.
+const AVATAR_EVENT = 'avatar-updated'
 
 const container = {
   hidden: {},
@@ -216,6 +229,37 @@ const inputCls = (error, muted) =>
           error ? 'ring-[#F6465D]/60 focus:ring-[#F6465D]' : 'ring-white/10 focus:ring-[#3DDC97]/70'
         }`
   }`
+
+/* ── Profile picture helpers ───────────────────── */
+
+const extOf = (name) => {
+  const m = /\.([a-z0-9]+)$/i.exec(name || '')
+  return m ? m[1].toLowerCase() : ''
+}
+
+const isHeic = (file) => {
+  const ext = extOf(file?.name)
+  const type = String(file?.type || '').toLowerCase()
+  return ext === 'heic' || ext === 'heif' || type === 'image/heic' || type === 'image/heif'
+}
+
+const formatSize = (bytes) => {
+  if (!bytes) return ''
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Checked in the browser first so the user does not waste an upload
+function photoProblem(file) {
+  const typeOk =
+    PHOTO_EXTS.includes(extOf(file.name)) || /^image\/(jpeg|png|webp|heic|heif)$/i.test(file.type || '')
+  if (!typeOk) return 'Unsupported file type. Use a JPG, PNG, WEBP or HEIC image.'
+  if (file.size === 0) return 'This file is empty. Please choose another image.'
+  if (file.size > PHOTO_MAX_MB * 1024 * 1024) {
+    return `The image is too large. The maximum size is ${PHOTO_MAX_MB} MB.`
+  }
+  return ''
+}
 
 /* ────────────────────────────────────────────────
    FORM PIECES
@@ -463,6 +507,248 @@ function Block({ className }) {
   return <div className={`animate-pulse rounded-2xl bg-[#14212D] ${className}`} />
 }
 
+/* ── Profile picture pieces ────────────────────── */
+
+// Neutral, unisex avatar: head and shoulders on a round background
+function ProfileIcon() {
+  return (
+    <svg viewBox="0 0 32 32" className="h-full w-full" aria-hidden="true">
+      <circle cx="16" cy="16" r="16" fill="#1D3042" />
+      <circle cx="16" cy="12.5" r="5" fill="#9FB4C7" />
+      <path d="M6.5 27c.8-5 4.9-8 9.5-8s8.7 3 9.5 8a15 15 0 0 1-19 0z" fill="#9FB4C7" />
+    </svg>
+  )
+}
+
+// Shows the picture, or the unisex icon when there is none (or it fails to load)
+function PhotoPreview({ url }) {
+  const [failedUrl, setFailedUrl] = useState(null)
+
+  if (!url || failedUrl === url) return <ProfileIcon />
+
+  return (
+    <img
+      src={url}
+      alt="Profile picture"
+      className="h-full w-full object-cover"
+      draggable="false"
+      decoding="async"
+      onError={() => setFailedUrl(url)}
+    />
+  )
+}
+
+const photoBtn =
+  'inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-60'
+
+function PhotoSection({
+  avatarUrl,
+  pending,
+  busy,
+  disabled,
+  cooldown,
+  confirmRemove,
+  note,
+  onPick,
+  onUpload,
+  onCancelPending,
+  onAskRemove,
+  onCancelRemove,
+  onRemove,
+}) {
+  const fileRef = useRef(null)
+
+  const locked = Boolean(busy) || disabled
+  const heicPending = Boolean(pending) && !pending.url
+  const shownUrl = pending ? pending.url : avatarUrl
+  const hasPicture = Boolean(avatarUrl)
+  const tone = note ? TONES[note.tone] : null
+
+  const handleChange = (e) => {
+    const picked = e.target.files?.[0]
+    e.target.value = '' // lets the same file be chosen again
+    if (picked) onPick(picked)
+  }
+
+  return (
+    <Section icon={Camera} title="Profile picture">
+      <input
+        ref={fileRef}
+        id="profile_photo"
+        name="profile_photo"
+        type="file"
+        accept={PHOTO_ACCEPT}
+        onChange={handleChange}
+        className="sr-only"
+        tabIndex={-1}
+        aria-label="Choose a profile picture"
+      />
+
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+        <div className="relative h-24 w-24 shrink-0 self-start overflow-hidden rounded-full ring-2 ring-white/10 sm:self-center">
+          {heicPending ? (
+            <div className="grid h-full w-full place-items-center bg-[#1D3042] px-2 text-center text-[10px] leading-tight text-slate-300">
+              HEIC photo ready
+            </div>
+          ) : (
+            <PhotoPreview key={shownUrl || 'none'} url={shownUrl} />
+          )}
+          {busy && (
+            <div className="absolute inset-0 grid place-items-center bg-black/55">
+              <Loader2 className="h-6 w-6 animate-spin text-white" aria-hidden="true" />
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          {pending ? (
+            <>
+              <p className="text-sm font-medium text-white">Preview: not saved yet</p>
+              <p className="mt-0.5 truncate text-xs text-slate-400">
+                {pending.file.name} · {formatSize(pending.file.size)}
+              </p>
+              {heicPending && (
+                <p className="mt-1 text-xs text-slate-500">
+                  HEIC photos cannot be previewed in the browser, but this one can still be saved.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-white">
+                {hasPicture ? 'Your profile picture' : 'No profile picture yet'}
+              </p>
+              <p className="mt-0.5 text-xs text-slate-400">
+                {hasPicture
+                  ? 'Choose a new photo to replace it, or remove it.'
+                  : 'Add a photo and it will show in your dashboard header.'}
+              </p>
+            </>
+          )}
+
+          <p className="mt-1.5 text-xs text-slate-500">
+            JPG, PNG, WEBP or HEIC, up to {PHOTO_MAX_MB} MB. It is cropped to a square around your face and stored
+            publicly.
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {pending ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onUpload}
+                  disabled={locked || cooldown > 0}
+                  className={`${photoBtn} bg-[#3DDC97] font-semibold text-[#06140E] hover:bg-[#5BEBAD]`}
+                >
+                  {busy === 'upload' ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Uploading…
+                    </>
+                  ) : cooldown > 0 ? (
+                    `Try again in ${cooldown}s`
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4" aria-hidden="true" />
+                      Save photo
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={locked}
+                  className={`${photoBtn} border border-white/15 text-slate-200 hover:border-white/30 hover:text-white`}
+                >
+                  Choose another
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancelPending}
+                  disabled={locked}
+                  className={`${photoBtn} text-slate-400 hover:text-white`}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : confirmRemove ? (
+              <>
+                <p className="w-full text-sm text-slate-200">Remove your profile picture?</p>
+                <button
+                  type="button"
+                  onClick={onRemove}
+                  disabled={locked}
+                  className={`${photoBtn} bg-rose-500 font-semibold text-white hover:bg-rose-400`}
+                >
+                  {busy === 'remove' ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Removing…
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      Yes, remove
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancelRemove}
+                  disabled={locked}
+                  className={`${photoBtn} border border-white/15 text-slate-200 hover:border-white/30 hover:text-white`}
+                >
+                  Keep it
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={locked}
+                  className={`${photoBtn} bg-white/[0.07] text-slate-100 hover:bg-white/[0.12]`}
+                >
+                  <Camera className="h-4 w-4" aria-hidden="true" />
+                  {hasPicture ? 'Change photo' : 'Add photo'}
+                </button>
+                {hasPicture && (
+                  <button
+                    type="button"
+                    onClick={onAskRemove}
+                    disabled={locked}
+                    className={`${photoBtn} text-slate-400 hover:bg-[#F6465D]/10 hover:text-red-300`}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    Remove
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <AnimatePresence initial={false}>
+        {note && (
+          <motion.div
+            key={note.id}
+            role={note.tone === 'error' || note.tone === 'warn' ? 'alert' : 'status'}
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className={`mt-4 flex items-start gap-2.5 rounded-xl px-3.5 py-3 text-sm ${tone.box}`}
+          >
+            <tone.Icon className={`mt-0.5 h-4 w-4 shrink-0 ${tone.icon}`} aria-hidden="true" />
+            <p className="min-w-0 flex-1 break-words">{note.text}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </Section>
+  )
+}
+
 /* ────────────────────────────────────────────────
    PAGE
 ──────────────────────────────────────────────── */
@@ -482,10 +768,19 @@ export default function EditProfile() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
+  // Profile picture. A chosen file waits as { file, url } until the user saves it.
+  const [pending, setPending] = useState(null)
+  const [photoBusy, setPhotoBusy] = useState('') // '' | 'upload' | 'remove'
+  const [photoNote, setPhotoNote] = useState(null)
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  const [photoCooldown, setPhotoCooldown] = useState(0)
+
   const formRef = useRef(null)
   const bannerRef = useRef(null)
   const timerRef = useRef(null)
   const bannerId = useRef(0)
+  const pendingRef = useRef(null)
+  const noteId = useRef(0)
 
   // Load the current profile to pre-fill the form
   useEffect(() => {
@@ -514,20 +809,36 @@ export default function EditProfile() {
 
   useEffect(() => () => clearTimeout(timerRef.current), [])
 
+  // Release the preview URL still held when the page goes away
+  useEffect(
+    () => () => {
+      if (pendingRef.current?.url) URL.revokeObjectURL(pendingRef.current.url)
+    },
+    [],
+  )
+
+  // Counts down after a 429 on the picture upload
+  useEffect(() => {
+    if (photoCooldown <= 0) return undefined
+    const id = setTimeout(() => setPhotoCooldown((c) => c - 1), 1000)
+    return () => clearTimeout(id)
+  }, [photoCooldown])
+
   const base = useMemo(() => (profile ? toForm(profile) : null), [profile])
   const locked = useMemo(() => new Set(profile?.locked_fields || []), [profile])
   const dirty = Boolean(form && base) && Object.keys(buildPayload(form, base, locked)).length > 0
+  const hasPendingPhoto = Boolean(pending)
 
-  // Warn before a refresh or tab close while there are unsaved edits
+  // Warn before a refresh or tab close while there are unsaved edits or an unsaved picture
   useEffect(() => {
-    if (!dirty) return
+    if (!dirty && !hasPendingPhoto) return undefined
     const onUnload = (e) => {
       e.preventDefault()
       e.returnValue = ''
     }
     window.addEventListener('beforeunload', onUnload)
     return () => window.removeEventListener('beforeunload', onUnload)
-  }, [dirty])
+  }, [dirty, hasPendingPhoto])
 
   const retryLoad = () => {
     setLoadErr('')
@@ -561,6 +872,131 @@ export default function EditProfile() {
       return next
     })
   }
+
+  /* ── Profile picture handlers ── */
+
+  const showPhotoNote = (tone, text) => {
+    noteId.current += 1
+    setPhotoNote({ id: noteId.current, tone, text })
+  }
+
+  // Swaps the chosen file and releases the preview URL of the one it replaces
+  const commitPending = (next) => {
+    if (pendingRef.current?.url) URL.revokeObjectURL(pendingRef.current.url)
+    pendingRef.current = next
+    setPending(next)
+  }
+
+  // Only the picture changes here: the form fields keep any edits the user has not saved yet
+  const applyAvatar = (url) => {
+    setProfile((p) => (p ? { ...p, avatar_url: url } : p))
+    try {
+      window.dispatchEvent(new CustomEvent(AVATAR_EVENT, { detail: { url } }))
+    } catch {
+      /* not critical */
+    }
+  }
+
+  const pickPhoto = (file) => {
+    const problem = photoProblem(file)
+    if (problem) {
+      showPhotoNote('error', problem)
+      return
+    }
+    commitPending({ file, url: isHeic(file) ? '' : URL.createObjectURL(file) })
+    setConfirmRemove(false)
+    setPhotoNote(null)
+  }
+
+  const cancelPending = () => {
+    commitPending(null)
+    setPhotoNote(null)
+  }
+
+  const handlePhotoError = (err) => {
+    const res = err?.response
+    if (!res) {
+      showPhotoNote(
+        'error',
+        err?.code === 'ECONNABORTED'
+          ? 'The upload took too long. Check your connection and try again.'
+          : 'Network error. Check your connection and try again.',
+      )
+      return
+    }
+
+    const { status, data } = res
+    const message = data?.message
+
+    if (status === 400) {
+      const fieldMsg = flatten(data?.errors?.profile_photo)[0]
+      showPhotoNote('error', fieldMsg || message || 'We could not use this image. Please try another one.')
+      return
+    }
+    if (status === 401) {
+      showPhotoNote('error', 'Your session has expired. Please sign in again to continue.')
+      return
+    }
+    if (status === 415) {
+      showPhotoNote('error', 'Your request could not be read. Please refresh the page and try again.')
+      return
+    }
+    if (status === 429) {
+      const wait = Number(data?.data?.retry_after_seconds)
+      if (Number.isFinite(wait) && wait > 0) setPhotoCooldown(Math.min(Math.ceil(wait), 300))
+      showPhotoNote('warn', message || 'Too many requests. Please wait a moment and try again.')
+      return
+    }
+    // The image host failed. Nothing changed and the old picture is kept.
+    if (status === 502) {
+      showPhotoNote('warn', message || 'We could not upload your image. Your current picture is unchanged, please try again.')
+      return
+    }
+    if (status === 503) {
+      showPhotoNote('warn', message || 'Image uploads are temporarily unavailable. Please try again later.')
+      return
+    }
+    showPhotoNote('error', 'Something went wrong on our side. Please try again in a moment.')
+  }
+
+  const uploadPhoto = async () => {
+    if (!pending || photoBusy || photoCooldown > 0) return
+    setPhotoBusy('upload')
+    setPhotoNote(null)
+
+    try {
+      const fd = new FormData()
+      fd.append('profile_photo', pending.file, pending.file.name)
+      // No Content-Type header here: the browser adds multipart/form-data with the boundary
+      const res = await api.post('/api/profile/photo/', fd, { timeout: PHOTO_UPLOAD_TIMEOUT_MS })
+      applyAvatar(res.data?.data?.avatar_url ?? null)
+      commitPending(null)
+      showPhotoNote('success', res.data?.message || 'Profile picture updated.')
+    } catch (err) {
+      handlePhotoError(err)
+    } finally {
+      setPhotoBusy('')
+    }
+  }
+
+  const removePhoto = async () => {
+    if (photoBusy) return
+    setPhotoBusy('remove')
+    setPhotoNote(null)
+
+    try {
+      const res = await api.delete('/api/profile/photo/')
+      applyAvatar(res.data?.data?.avatar_url ?? null)
+      setConfirmRemove(false)
+      showPhotoNote('success', res.data?.message || 'Profile picture removed.')
+    } catch (err) {
+      handlePhotoError(err)
+    } finally {
+      setPhotoBusy('')
+    }
+  }
+
+  /* ── Profile details ── */
 
   const handleError = (err) => {
     const res = err?.response
@@ -661,6 +1097,7 @@ export default function EditProfile() {
           <div className="h-6 w-32 animate-pulse rounded bg-white/10" />
           <div className="h-4 w-56 animate-pulse rounded bg-white/[0.06]" />
         </div>
+        <Block className="h-40" />
         <Block className="h-80" />
         <Block className="h-48" />
         <Block className="h-72" />
@@ -688,9 +1125,27 @@ export default function EditProfile() {
         initial={reduce ? false : 'hidden'}
         animate="show"
       >
-        
-
         <Banner banner={banner} innerRef={bannerRef} />
+
+        {/* ── Profile picture (saved on its own, separate from the Save changes button) ── */}
+        <PhotoSection
+          avatarUrl={profile.avatar_url || null}
+          pending={pending}
+          busy={photoBusy}
+          disabled={saving || saved}
+          cooldown={photoCooldown}
+          confirmRemove={confirmRemove}
+          note={photoNote}
+          onPick={pickPhoto}
+          onUpload={uploadPhoto}
+          onCancelPending={cancelPending}
+          onAskRemove={() => {
+            setConfirmRemove(true)
+            setPhotoNote(null)
+          }}
+          onCancelRemove={() => setConfirmRemove(false)}
+          onRemove={removePhoto}
+        />
 
         <fieldset disabled={saving || saved} className="min-w-0 space-y-5 border-0 p-0">
           {/* ── Personal information ── */}

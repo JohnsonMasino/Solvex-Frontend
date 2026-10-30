@@ -5,6 +5,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
+  ArrowLeft,
   ArrowRight,
   Check,
   CheckCircle2,
@@ -14,7 +15,9 @@ import {
   EyeOff,
   Info,
   Loader2,
+  RefreshCw,
   TrendingUp,
+  UploadCloud,
   Wallet,
   X,
 } from 'lucide-react'
@@ -26,13 +29,20 @@ import api from '../../components/Api'
 
 const HIDE_KEY = 'balanceHidden'
 const MASK = '••••••'
-const PAY_WINDOW_MS = 30 * 60 * 1000 // 30 minutes to pay
+const PAY_WINDOW_MS = 30 * 60 * 1000 // 30 minutes to pay (and upload the screenshot)
 const REVIEW_SECONDS = 5 // "pending review" screen before redirecting
 const QUICK_AMOUNTS = [50, 100, 250, 500, 1000] // USDT units, or USD for BTC / ETH
 const DEFAULT_DECIMALS = 6
 const DEFAULT_REFRESH_SECONDS = 30
-const STEPS = ['Amount', 'Payment', 'Review']
-const PHASE_INDEX = { form: 0, pay: 1, review: 2 }
+const STEPS = ['Amount', 'Payment', 'Proof', 'Review']
+const PHASE_INDEX = { form: 0, pay: 1, proof: 2, review: 3 }
+
+// Screenshot upload limits. The server config (screenshot_max_mb / screenshot_formats) overrides these.
+const DEFAULT_MAX_MB = 5
+const DEFAULT_FORMATS = ['jpg', 'png', 'webp', 'heic']
+const UPLOAD_TIMEOUT_MS = 120 * 1000 // slow mobile connections need time
+const IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']
+const IMAGE_ACCEPT = 'image/*,.heic,.heif'
 
 // Network preselected when the user arrives from the Signals page
 const SIGNAL_NETWORK = 'bep20'
@@ -278,6 +288,99 @@ function describeSubmitError(err) {
   return { message: serverMsg || 'We could not create your deposit. Please try again.' }
 }
 
+// Checks a chosen screenshot BEFORE uploading. Returns an error string, or '' when it is fine.
+// (The server re-checks the real file content, this only saves a wasted upload.)
+function checkScreenshot(file, maxMb, formats) {
+  if (!file) return 'Please choose a screenshot of your payment.'
+  if (!file.size) return 'The selected file is empty.'
+  if (file.size > maxMb * 1024 * 1024) return `The image is too large. The maximum size is ${maxMb} MB.`
+  const ext = (file.name.split('.').pop() || '').toLowerCase().replace('jpeg', 'jpg').replace('heif', 'heic')
+  const okType = IMAGE_MIME.includes((file.type || '').toLowerCase()) || formats.includes(ext)
+  if (!okType) return `Upload a ${formats.map((f) => f.toUpperCase()).join(', ')} image.`
+  return ''
+}
+
+// Errors for POST /deposits/{id}/screenshot/.
+// Returns { message, kind? } where kind: 'paid' (already marked as paid) | 'closed' (no longer pending / not found)
+function describeUploadError(err) {
+  if (err?.code === 'ECONNABORTED') {
+    return { message: 'The upload took too long. Check your connection and try again.' }
+  }
+  const res = err?.response
+  if (!res) return { message: 'Network error. Check your connection and try again.' }
+
+  const { status, data } = res
+  const code = data?.code
+  const serverMsg = typeof data?.message === 'string' ? data.message : ''
+
+  if (status === 400) {
+    if (code === 'image_too_large') {
+      const mb = num(data?.data?.max_mb)
+      return { message: serverMsg || `The image is too large${mb ? `. The maximum size is ${mb} MB` : ''}.` }
+    }
+    if (code === 'invalid_image') return { message: serverMsg || 'Upload a JPG, PNG, WEBP or HEIC image.' }
+    const first = flatten(data?.errors?.screenshot)[0] || flatten(data?.errors)[0]
+    return { message: first || serverMsg || 'We could not read that file. Please choose another image.' }
+  }
+  if (status === 401) return { message: 'Your session has expired. Please sign in again to continue.' }
+  if (status === 403) {
+    return { message: serverMsg || 'Please verify your email address to continue.' }
+  }
+  if (status === 404) return { message: 'We could not find this deposit. Please start a new one.', kind: 'closed' }
+  if (status === 409) {
+    if (code === 'deposit_already_paid') return { message: '', kind: 'paid' }
+    return { message: serverMsg || 'This deposit is no longer pending. Please start a new one.', kind: 'closed' }
+  }
+  if (status === 413) return { message: 'The image is too large. Please choose a smaller one.' }
+  if (status === 429) {
+    const secs = num(data?.data?.retry_after_seconds)
+    return {
+      message: secs
+        ? `Too many uploads. Please wait ${secs} second${secs === 1 ? '' : 's'} and try again.`
+        : 'Too many uploads. Please wait a moment and try again.',
+    }
+  }
+  if (status === 502) return { message: 'We could not upload your image. Please try again.' }
+  if (status === 503) return { message: 'Image uploads are temporarily unavailable. Please try again later.' }
+  if (status >= 500) return { message: 'Something went wrong on our side. Please try again in a moment.' }
+  return { message: serverMsg || 'We could not upload your screenshot. Please try again.' }
+}
+
+// Errors for POST /deposits/{id}/paid/.
+// kind: 'paid' (already marked as paid, treat as success) | 'closed' (no longer pending) | 'nofile' (no screenshot stored)
+function describePaidError(err) {
+  const res = err?.response
+  if (!res) return { message: 'Network error. Check your connection and try again.' }
+
+  const { status, data } = res
+  const code = data?.code
+  const serverMsg = typeof data?.message === 'string' ? data.message : ''
+
+  if (status === 400) {
+    if (code === 'screenshot_required') {
+      return { message: serverMsg || 'Please upload a screenshot of your payment first.', kind: 'nofile' }
+    }
+    return { message: serverMsg || 'We could not confirm your payment. Please try again.' }
+  }
+  if (status === 401) return { message: 'Your session has expired. Please sign in again to continue.' }
+  if (status === 403) return { message: serverMsg || 'Please verify your email address to continue.' }
+  if (status === 404) return { message: 'We could not find this deposit. Please start a new one.', kind: 'closed' }
+  if (status === 409) {
+    if (code === 'deposit_already_paid') return { message: '', kind: 'paid' }
+    return { message: serverMsg || 'This deposit is no longer pending. Please start a new one.', kind: 'closed' }
+  }
+  if (status === 429) {
+    const secs = num(data?.data?.retry_after_seconds)
+    return {
+      message: secs
+        ? `Too many requests. Please wait ${secs} second${secs === 1 ? '' : 's'} and try again.`
+        : 'Too many requests. Please wait a moment and try again.',
+    }
+  }
+  if (status >= 500) return { message: 'Something went wrong on our side. Please try again in a moment.' }
+  return { message: serverMsg || 'We could not confirm your payment. Please try again.' }
+}
+
 // Counts down to `endAt` (ms timestamp). Uses the wall clock so throttled tabs stay accurate.
 function useCountdown(endAt, onExpire) {
   const [left, setLeft] = useState(() => (endAt ? Math.max(0, endAt - Date.now()) : 0))
@@ -470,6 +573,67 @@ function QrImage({ network }) {
         <p className="px-3 text-center text-xs text-slate-600">QR code unavailable. Copy the address below instead.</p>
       )}
     </div>
+  )
+}
+
+// The countdown card shown on both the Payment and Proof steps
+function TimerCard({ left, reduce }) {
+  const expired = left <= 0
+  const pct = Math.min(100, (left / PAY_WINDOW_MS) * 100)
+  const urgent = left < 60 * 1000
+  const warn = left < 5 * 60 * 1000
+  const timerColor = urgent ? 'text-[#F6465D]' : warn ? 'text-amber-300' : 'text-[#3DDC97]'
+  const barColor = urgent ? 'bg-[#F6465D]' : warn ? 'bg-amber-400' : 'bg-[#3DDC97]'
+
+  return (
+    <section aria-label="Time left to pay" className="rounded-2xl bg-[#14212D] p-3.5 sm:p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="flex items-center gap-2 text-[13px] font-medium text-slate-300 sm:text-sm">
+          <Clock className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+          Time left to pay
+        </p>
+        <p
+          className={`font-mono text-xl font-semibold tabular-nums sm:text-2xl ${timerColor} ${
+            urgent && !reduce ? 'animate-pulse' : ''
+          }`}
+          role="timer"
+          aria-live="off"
+        >
+          {mmss(left)}
+        </p>
+      </div>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
+        <div
+          className={`h-full rounded-full transition-[width] duration-500 ease-linear ${barColor}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="mt-2 text-[11px] text-slate-400 sm:text-xs">
+        {expired ? 'Time is up. Closing this request…' : 'This request closes automatically when the timer ends.'}
+      </p>
+    </section>
+  )
+}
+
+// Image preview that hides itself (shows a placeholder) when the browser cannot render the file (e.g. HEIC)
+function ProofImage({ src, alt }) {
+  const [broken, setBroken] = useState(false)
+
+  if (!src || broken) {
+    return (
+      <div className="grid h-40 w-full place-items-center rounded-xl bg-white/[0.04] px-4 text-center text-xs text-slate-400">
+        Preview not available for this file type
+      </div>
+    )
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      onError={() => setBroken(true)}
+      className="max-h-72 w-full rounded-xl bg-black/30 object-contain"
+      draggable="false"
+    />
   )
 }
 
@@ -906,13 +1070,8 @@ function FormStep({
    STEP 2: PAY
 ──────────────────────────────────────────────── */
 
-function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, fmtRate, reduce }) {
+function PayStep({ deposit, left, onNext, onCancel, cancelling, money, fmtRate, reduce }) {
   const expired = left <= 0
-  const pct = Math.min(100, (left / PAY_WINDOW_MS) * 100)
-  const urgent = left < 60 * 1000
-  const warn = left < 5 * 60 * 1000
-  const timerColor = urgent ? 'text-[#F6465D]' : warn ? 'text-amber-300' : 'text-[#3DDC97]'
-  const barColor = urgent ? 'bg-[#F6465D]' : warn ? 'bg-amber-400' : 'bg-[#3DDC97]'
   const amountText = trimZeros(deposit.amount)
   const unit = String(deposit.asset || assetFromNetwork(deposit.network)).toUpperCase()
   const netLabel = deposit.network.toUpperCase()
@@ -921,35 +1080,7 @@ function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, fmtRate, 
 
   return (
     <div className="space-y-4 sm:space-y-5">
-      {/* Timer */}
-      <section aria-label="Time left to pay" className="rounded-2xl bg-[#14212D] p-3.5 sm:p-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="flex items-center gap-2 text-[13px] font-medium text-slate-300 sm:text-sm">
-            <Clock className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
-            Time left to pay
-          </p>
-          <p
-            className={`font-mono text-xl font-semibold tabular-nums sm:text-2xl ${timerColor} ${
-              urgent && !reduce ? 'animate-pulse' : ''
-            }`}
-            role="timer"
-            aria-live="off"
-          >
-            {mmss(left)}
-          </p>
-        </div>
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
-          <div
-            className={`h-full rounded-full transition-[width] duration-500 ease-linear ${barColor}`}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <p className="mt-2 text-[11px] text-slate-400 sm:text-xs">
-          {expired
-            ? 'Time is up. Closing this request…'
-            : 'This request closes automatically when the timer ends.'}
-        </p>
-      </section>
+      <TimerCard left={left} reduce={reduce} />
 
       {/* Payment details */}
       <section aria-label="Payment details" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
@@ -1023,15 +1154,15 @@ function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, fmtRate, 
             Send exactly {amountText} {unit}. A different amount may delay or block your credit.
           </li>
           <li>Use the {netLabel} network only. Funds sent on another network can be lost.</li>
-          <li>Tap “I have paid” after your transfer so our team can review it.</li>
+          <li>After your transfer, take a screenshot of the payment. You will upload it in the next step.</li>
         </ul>
       </section>
 
       {/* Actions */}
       <div className="space-y-2.5">
-        <button type="button" onClick={onPaid} disabled={busy} className={`${primaryBtn} w-full`}>
-          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-          I have paid
+        <button type="button" onClick={onNext} disabled={busy} className={`${primaryBtn} w-full`}>
+          I have sent the payment
+          <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </button>
         <button type="button" onClick={onCancel} disabled={busy} className={`${ghostBtn} w-full`}>
           {cancelling ? (
@@ -1049,7 +1180,234 @@ function PayStep({ deposit, left, onPaid, onCancel, cancelling, money, fmtRate, 
 }
 
 /* ────────────────────────────────────────────────
-   STEP 3: PENDING REVIEW
+   STEP 3: UPLOAD PAYMENT SCREENSHOT, THEN "I HAVE PAID"
+──────────────────────────────────────────────── */
+
+function ProofStep({
+  deposit,
+  left,
+  localPreview,
+  uploading,
+  progress,
+  paying,
+  cancelling,
+  error,
+  maxMb,
+  formats,
+  onPick,
+  onBack,
+  onPaid,
+  onCancel,
+  reduce,
+}) {
+  const inputRef = useRef(null)
+  const [dragging, setDragging] = useState(false)
+
+  const expired = left <= 0
+  const hasShot = Boolean(deposit.has_screenshot)
+  const busy = uploading || paying || cancelling
+  const locked = busy || expired
+  const amountText = trimZeros(deposit.amount)
+  const unit = String(deposit.asset || assetFromNetwork(deposit.network)).toUpperCase()
+  const netLabel = deposit.network.toUpperCase()
+  const formatText = formats.map((f) => f.toUpperCase()).join(', ')
+
+  // While uploading show the local file, afterwards the copy stored on the server
+  const previewSrc = uploading ? localPreview : deposit.screenshot_thumbnail_url || localPreview
+
+  const choose = (file) => {
+    if (file && !locked) onPick(file)
+  }
+
+  const onInput = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allows picking the same file again
+    choose(file)
+  }
+
+  const onDrop = (e) => {
+    e.preventDefault()
+    setDragging(false)
+    choose(e.dataTransfer?.files?.[0])
+  }
+
+  return (
+    <div className="space-y-4 sm:space-y-5">
+      <TimerCard left={left} reduce={reduce} />
+
+      {/* What was paid, as a reminder */}
+      <section aria-label="Payment summary" className="rounded-2xl bg-[#14212D] p-3.5 sm:p-4">
+        <dl className="space-y-2 text-[13px] sm:text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-slate-400">Amount sent</dt>
+            <dd className="break-all text-right font-mono font-semibold tabular-nums text-[#3DDC97]">
+              {amountText} {unit}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-slate-400">Network</dt>
+            <dd>
+              <span
+                className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-bold ${
+                  NETWORK_STYLE[deposit.network] || NETWORK_FALLBACK
+                }`}
+              >
+                {netLabel}
+              </span>
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-slate-400">Reference</dt>
+            <dd className="font-mono text-slate-200">{deposit.reference}</dd>
+          </div>
+        </dl>
+      </section>
+
+      {/* Upload */}
+      <section aria-label="Upload payment screenshot" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
+        <p className="px-0.5 text-[13px] font-semibold text-white sm:text-sm">Upload a screenshot of your payment</p>
+        <p className="mt-0.5 px-0.5 text-[11px] leading-relaxed text-slate-400 sm:text-xs">
+          Show the amount, network, receiving address and transaction ID or hash if you can. Our team checks this before
+          crediting your balance.
+        </p>
+
+        <input
+          ref={inputRef}
+          type="file"
+          accept={IMAGE_ACCEPT}
+          onChange={onInput}
+          disabled={locked}
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+        />
+
+        <div className="mt-3">
+          {!hasShot && !uploading ? (
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault()
+                if (!locked) setDragging(true)
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              disabled={locked}
+              className={`flex w-full flex-col items-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-60 ${
+                dragging
+                  ? 'border-[#3DDC97] bg-[#3DDC97]/[0.08]'
+                  : 'border-white/15 bg-[#0E1822] hover:border-white/30'
+              }`}
+            >
+              <span className="grid h-12 w-12 place-items-center rounded-full bg-[#3DDC97]/[0.15] text-[#3DDC97]">
+                <UploadCloud className="h-6 w-6" aria-hidden="true" />
+              </span>
+              <span className="text-[13px] font-medium text-white sm:text-sm">Tap to choose a screenshot</span>
+              <span className="text-[11px] text-slate-400 sm:text-xs">
+                {formatText} · up to {maxMb} MB
+              </span>
+            </button>
+          ) : (
+            <div className="rounded-xl bg-[#0E1822] p-3">
+              {hasShot && !uploading && deposit.screenshot_url ? (
+                <a href={deposit.screenshot_url} target="_blank" rel="noopener noreferrer" className="block">
+                  <ProofImage src={previewSrc} alt="Your uploaded payment screenshot" />
+                </a>
+              ) : (
+                <ProofImage src={previewSrc} alt="Your payment screenshot" />
+              )}
+
+              {uploading ? (
+                <div className="mt-3" role="status" aria-live="polite">
+                  <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
+                    <div
+                      className="h-full rounded-full bg-[#3DDC97] transition-[width] duration-200 ease-out"
+                      style={{ width: `${Math.max(4, progress)}%` }}
+                    />
+                  </div>
+                  <p className="mt-2 flex items-center gap-2 text-[12px] text-slate-300 sm:text-[13px]">
+                    <Loader2 className="h-4 w-4 animate-spin text-[#3DDC97]" aria-hidden="true" />
+                    {progress >= 100 ? 'Processing your image…' : `Uploading… ${progress}%`}
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="flex items-center gap-2 text-[12px] font-medium text-[#9BF0C8] sm:text-[13px]">
+                    <CheckCircle2 className="h-4 w-4 text-[#3DDC97]" aria-hidden="true" />
+                    Screenshot uploaded
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => inputRef.current?.click()}
+                    disabled={locked}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-medium text-slate-200 ring-1 ring-white/15 transition-colors hover:text-white hover:ring-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                    Replace
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <AnimatePresence initial={false}>
+          {error && (
+            <motion.div
+              key="proof-error"
+              className="mt-3"
+              initial={reduce ? false : { opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+            >
+              <InlineError message={error} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </section>
+
+      {/* Actions */}
+      <div className="space-y-2.5">
+        <button type="button" onClick={onPaid} disabled={!hasShot || locked} className={`${primaryBtn} w-full`}>
+          {paying ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Confirming…
+            </>
+          ) : (
+            <>
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              I have paid
+            </>
+          )}
+        </button>
+        {!hasShot && !uploading && (
+          <p className="text-center text-[11px] text-slate-500 sm:text-xs">Upload your screenshot to enable this button.</p>
+        )}
+        <div className="flex gap-2.5">
+          <button type="button" onClick={onBack} disabled={locked} className={`${ghostBtn} flex-1 px-3`}>
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            Payment details
+          </button>
+          <button type="button" onClick={onCancel} disabled={locked} className={`${ghostBtn} flex-1 px-3`}>
+            {cancelling ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Cancelling…
+              </>
+            ) : (
+              'Cancel deposit'
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────
+   STEP 4: PENDING REVIEW
 ──────────────────────────────────────────────── */
 
 function ReviewStep({ deposit, secs, reduce }) {
@@ -1085,8 +1443,9 @@ function ReviewStep({ deposit, secs, reduce }) {
 
       <h2 className="mt-6 text-base font-semibold text-white sm:text-lg">Your deposit is pending admin review</h2>
       <p className="mx-auto mt-2 max-w-sm text-[13px] leading-relaxed text-slate-400 sm:text-sm">
-        We have received your request{deposit?.reference ? ` (${deposit.reference})` : ''}. Your balance will be credited
-        once the payment is confirmed.
+        We have received your payment confirmation and screenshot
+        {deposit?.reference ? ` (${deposit.reference})` : ''}. Your balance will be credited once the payment is
+        confirmed.
       </p>
 
       <div className="mx-auto mt-6 h-1.5 max-w-xs overflow-hidden rounded-full bg-white/[0.07]" aria-hidden="true">
@@ -1120,11 +1479,18 @@ export default function Deposit() {
   const [signalModal, setSignalModal] = useState(false)
 
   // flow
-  const [phase, setPhase] = useState('form') // form | pay | review
+  const [phase, setPhase] = useState('form') // form | pay | proof | review
   const [deposit, setDeposit] = useState(null)
   const [endAt, setEndAt] = useState(null)
   const [notice, setNotice] = useState(null)
   const [cancelling, setCancelling] = useState(false)
+
+  // screenshot proof
+  const [uploading, setUploading] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [paying, setPaying] = useState(false)
+  const [proofError, setProofError] = useState('')
+  const [localPreview, setLocalPreview] = useState(null) // object URL of the file the user just picked
 
   // form
   const [amount, setAmount] = useState('')
@@ -1149,12 +1515,24 @@ export default function Deposit() {
   const alive = useRef(true)
   const closing = useRef(false)
   const cfgBusy = useRef(false)
+  const busyRef = useRef(false) // true while a screenshot upload or the "I have paid" call is running
+  const expireLater = useRef(false) // timer ended during an upload: close the request when it finishes
+  const closeRef = useRef(null)
+  const previewRef = useRef(null)
 
   useEffect(() => {
     alive.current = true
     return () => {
       alive.current = false
+      if (previewRef.current) URL.revokeObjectURL(previewRef.current)
     }
+  }, [])
+
+  // Keeps exactly one local object URL alive and frees the previous one
+  const setPreview = useCallback((url) => {
+    if (previewRef.current && previewRef.current !== url) URL.revokeObjectURL(previewRef.current)
+    previewRef.current = url
+    setLocalPreview(url)
   }, [])
 
   // Load balance and wallet configuration
@@ -1287,6 +1665,14 @@ export default function Deposit() {
   const minAsset = rate > 0 ? minUsd / rate : 0
   const minText = trimZeros(ceilTo(minAsset, asset === 'usdt' ? 2 : decimals))
 
+  // Screenshot limits come from the server config, with safe defaults
+  const maxMb = num(cfg?.screenshot_max_mb) || DEFAULT_MAX_MB
+  const formats = useMemo(() => {
+    const list = Array.isArray(cfg?.screenshot_formats) ? cfg.screenshot_formats : []
+    const clean = list.map((f) => String(f).toLowerCase()).filter(Boolean)
+    return clean.length ? clean : DEFAULT_FORMATS
+  }, [cfg])
+
   const amt = num(amount)
   const usd = amt * rate // estimate only, the server re-prices on submit
   const belowMin = amt > 0 && rate > 0 && usd + 1e-9 < minUsd
@@ -1344,6 +1730,11 @@ export default function Deposit() {
       }
       const net = String(d.network || activeNetwork.value).toLowerCase()
       closing.current = false
+      busyRef.current = false
+      expireLater.current = false
+      setProofError('')
+      setProgress(0)
+      setPreview(null)
       setDeposit({
         ...d,
         network: net,
@@ -1363,6 +1754,38 @@ export default function Deposit() {
     }
   }
 
+  // Back to a fresh form (used after cancel, timeout, or when the server says the deposit is closed)
+  const resetToForm = useCallback(
+    (n) => {
+      setDeposit(null)
+      setEndAt(null)
+      setAmount('')
+      setChip(null)
+      setAmountErr('')
+      setFormError(null)
+      setCancelling(false)
+      setUploading(false)
+      setPaying(false)
+      setProgress(0)
+      setProofError('')
+      setPreview(null)
+      busyRef.current = false
+      expireLater.current = false
+      closing.current = false
+      setNotice(n)
+      setPhase('form')
+      // Refresh the balance and live rates for the fresh start
+      refreshConfig()
+      api
+        .get('/api/wallet/')
+        .then((res) => {
+          if (alive.current) setWallet(res.data?.data ?? null)
+        })
+        .catch(() => {})
+    },
+    [refreshConfig, setPreview],
+  )
+
   // Close the pending request (auto on timeout, or manual), then restart the page afresh
   const closeDeposit = useCallback(
     async (reason) => {
@@ -1375,39 +1798,134 @@ export default function Deposit() {
         /* if it cannot be cancelled here, the daily cron closes pending requests */
       }
       if (!alive.current) return
-      setDeposit(null)
-      setEndAt(null)
-      setAmount('')
-      setChip(null)
-      setAmountErr('')
-      setFormError(null)
-      setCancelling(false)
-      setNotice(
+      resetToForm(
         reason === 'expired'
           ? { tone: 'warn', text: 'Your payment window ended and the request was closed. Start a new deposit when you are ready.' }
           : { tone: 'success', text: 'Deposit request cancelled.' },
       )
-      closing.current = false
-      setPhase('form')
-      // Refresh the balance and live rates for the fresh start
-      refreshConfig()
-      api
-        .get('/api/wallet/')
-        .then((res) => {
-          if (alive.current) setWallet(res.data?.data ?? null)
-        })
-        .catch(() => {})
     },
-    [deposit, refreshConfig],
+    [deposit, resetToForm],
   )
 
-  const left = useCountdown(phase === 'pay' ? endAt : null, () => closeDeposit('expired'))
+  useEffect(() => {
+    closeRef.current = closeDeposit
+  })
 
-  const onPaid = () => {
-    if (phase !== 'pay' || closing.current) return
+  // When the timer ends: close the request, unless an upload / confirmation is mid-flight (then wait for it)
+  const onTimerExpire = useCallback(() => {
+    if (busyRef.current) {
+      expireLater.current = true
+      return
+    }
+    closeRef.current?.('expired')
+  }, [])
+
+  const left = useCountdown(phase === 'pay' || phase === 'proof' ? endAt : null, onTimerExpire)
+
+  // Runs when an upload / confirmation finishes: applies a timer expiry that happened meanwhile
+  const finishBusy = () => {
+    busyRef.current = false
+    if (!alive.current) return
+    setUploading(false)
+    setPaying(false)
+    if (expireLater.current) {
+      expireLater.current = false
+      closeRef.current?.('expired')
+    }
+  }
+
+  const goReview = () => {
+    expireLater.current = false
     setEndAt(null)
     setSecs(REVIEW_SECONDS)
     setPhase('review')
+  }
+
+  // The user picked a screenshot: check it, show it, upload it to POST /deposits/{id}/screenshot/
+  const pickScreenshot = async (file) => {
+    if (!deposit || phase !== 'proof' || busyRef.current || closing.current) return
+
+    const problem = checkScreenshot(file, maxMb, formats)
+    if (problem) {
+      setProofError(problem)
+      return
+    }
+
+    busyRef.current = true
+    setProofError('')
+    setProgress(0)
+    setUploading(true)
+    setPreview(URL.createObjectURL(file))
+
+    try {
+      const form = new FormData()
+      form.append('screenshot', file) // field name must be exactly "screenshot"
+
+      // Override the instance's default "application/json". Axios sees multipart, keeps the FormData as-is,
+      // and the browser fills in the real multipart boundary when sending.
+      const res = await api.post(`/api/wallet/deposits/${deposit.id}/screenshot/`, form, {
+        timeout: UPLOAD_TIMEOUT_MS,
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (ev) => {
+          if (alive.current && ev.total) setProgress(Math.min(100, Math.round((ev.loaded / ev.total) * 100)))
+        },
+      })
+      if (!alive.current) return
+      const d = res.data?.data
+      if (!d?.has_screenshot) {
+        setProofError('We could not confirm your upload. Please try again.')
+        return
+      }
+      // Keep our normalised network / asset / amount, take everything else (screenshot fields) from the server
+      setDeposit((prev) => ({ ...prev, ...d, network: prev.network, asset: prev.asset, amount: prev.amount }))
+    } catch (err) {
+      if (!alive.current) return
+      const info = describeUploadError(err)
+      if (info.kind === 'paid') {
+        // The server already has a payment confirmation for this deposit
+        goReview()
+      } else if (info.kind === 'closed') {
+        resetToForm({ tone: 'warn', text: info.message })
+      } else {
+        setProofError(info.message)
+      }
+    } finally {
+      finishBusy()
+    }
+  }
+
+  // "I have paid": POST /deposits/{id}/paid/ (the server requires the screenshot to be uploaded first)
+  const markPaid = async () => {
+    if (!deposit || phase !== 'proof' || busyRef.current || closing.current) return
+    if (!deposit.has_screenshot) {
+      setProofError('Please upload a screenshot of your payment first.')
+      return
+    }
+
+    busyRef.current = true
+    setProofError('')
+    setPaying(true)
+
+    try {
+      const res = await api.post(`/api/wallet/deposits/${deposit.id}/paid/`)
+      if (!alive.current) return
+      const d = res.data?.data
+      if (d) setDeposit((prev) => ({ ...prev, ...d, network: prev.network, asset: prev.asset, amount: prev.amount }))
+      goReview()
+    } catch (err) {
+      if (!alive.current) return
+      const info = describePaidError(err)
+      if (info.kind === 'paid') {
+        goReview()
+      } else if (info.kind === 'closed') {
+        resetToForm({ tone: 'warn', text: info.message })
+      } else {
+        if (info.kind === 'nofile') setDeposit((prev) => ({ ...prev, has_screenshot: false }))
+        setProofError(info.message)
+      }
+    } finally {
+      finishBusy()
+    }
   }
 
   // Review screen: 5 second spinner, then go to the transactions page
@@ -1504,11 +2022,36 @@ export default function Deposit() {
                 <PayStep
                   deposit={deposit}
                   left={left}
-                  onPaid={onPaid}
+                  onNext={() => setPhase('proof')}
                   onCancel={() => closeDeposit('manual')}
                   cancelling={cancelling}
                   money={money}
                   fmtRate={fmtRate}
+                  reduce={reduce}
+                />
+              </motion.div>
+            )}
+
+            {phase === 'proof' && deposit && (
+              <motion.div key="proof" variants={stepVariants} initial="initial" animate="animate" exit="exit">
+                <ProofStep
+                  deposit={deposit}
+                  left={left}
+                  localPreview={localPreview}
+                  uploading={uploading}
+                  progress={progress}
+                  paying={paying}
+                  cancelling={cancelling}
+                  error={proofError}
+                  maxMb={maxMb}
+                  formats={formats}
+                  onPick={pickScreenshot}
+                  onBack={() => {
+                    setProofError('')
+                    setPhase('pay')
+                  }}
+                  onPaid={markPaid}
+                  onCancel={() => closeDeposit('manual')}
                   reduce={reduce}
                 />
               </motion.div>

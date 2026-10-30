@@ -71,7 +71,7 @@ function _refreshAccessToken() {
   return refreshPromise;
 }
 
-// ── Request interceptor: attach access token ──────────────
+// ── Request interceptor: attach access token + handle file uploads ──
 api.interceptors.request.use(
   (config) => {
     if (!config.skipAuth) {
@@ -80,6 +80,21 @@ api.interceptors.request.use(
         config.headers.Authorization = `Bearer ${accessToken}`;
       }
     }
+
+    // FILE UPLOADS: when the body is FormData, remove the default
+    // "application/json" Content-Type. Otherwise axios turns the FormData
+    // into JSON (the file is lost) and Django answers 415 Unsupported Media Type.
+    // With the header removed, the browser sets
+    // "multipart/form-data; boundary=..." by itself, which is what Django needs.
+    if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+      if (config.headers && typeof config.headers.delete === "function") {
+        config.headers.delete("Content-Type"); // axios 1.x (AxiosHeaders)
+      } else if (config.headers) {
+        delete config.headers["Content-Type"]; // older axios
+        delete config.headers["content-type"];
+      }
+    }
+
     return config;
   },
   (error) => Promise.reject(error)

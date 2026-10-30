@@ -1,10 +1,12 @@
 // src/pages/inside/Kyc.jsx
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   AlertCircle,
   Briefcase,
+  Camera,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -12,6 +14,7 @@ import {
   Clock,
   Fingerprint,
   History as HistoryIcon,
+  Image as ImageIcon,
   Info,
   LayoutDashboard,
   Loader2,
@@ -19,6 +22,8 @@ import {
   Send,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
+  Upload,
   User,
   X,
   XCircle,
@@ -33,6 +38,12 @@ import { TierBadge } from '../../components/inside/Sidebar'
 const DASHBOARD_URL = '/dashboard'
 const HISTORY_PAGE_SIZE = 10
 const PHONE_RE = /^\+?[0-9][0-9\s-]{6,19}$/
+
+// Image rules. The server sends image_max_mb and image_formats in /api/kyc/options/,
+// these are the fallbacks when it does not.
+const DEFAULT_IMAGE_MAX_MB = 5
+const DEFAULT_IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']
+const UPLOAD_TIMEOUT_MS = 120000
 
 const container = {
   hidden: {},
@@ -113,9 +124,13 @@ const SECTION_FIELDS = {
   consent: ['accuracy_declaration', 'privacy_notice_accepted', 'terms_accepted', 'marketing_consent'],
 }
 
-const KNOWN_PATHS = new Set(
-  Object.entries(SECTION_FIELDS).flatMap(([section, fields]) => fields.map((f) => `${section}.${f}`)),
-)
+// The two ID images are top-level multipart fields, not dotted section keys
+const IMAGE_KEYS = ['id_front', 'id_back']
+
+const KNOWN_PATHS = new Set([
+  ...Object.entries(SECTION_FIELDS).flatMap(([section, fields]) => fields.map((f) => `${section}.${f}`)),
+  ...IMAGE_KEYS,
+])
 
 const REQUIRED = [
   ['personal.full_name', 'Full name'],
@@ -130,6 +145,7 @@ const REQUIRED = [
   ['identification.id_number', 'ID number'],
   ['employment.employment_status', 'Employment status'],
   ['employment.source_of_income', 'Source of income'],
+  ['employment.occupation', 'Occupation'],
   ['employment.annual_income_range', 'Annual income'],
   ['employment.expected_annual_volume', 'Expected annual volume'],
   ['employment.transaction_frequency', 'Transaction frequency'],
@@ -139,11 +155,21 @@ const REQUIRED = [
   ['consent.terms_accepted', 'Terms of service'],
 ]
 
+// Total counted by the submit bar: every required text field plus the two ID images
+const TOTAL_REQUIRED = REQUIRED.length + IMAGE_KEYS.length
+
 const CONSENT_MESSAGES = {
   'consent.accuracy_declaration': 'You must confirm that the information provided is accurate.',
   'consent.privacy_notice_accepted': 'You must accept the privacy notice.',
   'consent.terms_accepted': 'You must accept the terms of service.',
 }
+
+const IMAGE_LABELS = {
+  id_front: 'Front of ID',
+  id_back: 'Back of ID',
+}
+
+const EMPLOYER_REQUIRED_FOR = ['employed', 'self_employed']
 
 // ISO 3166-1 alpha-2 codes. Country names come from the browser's own Intl data.
 const COUNTRY_CODES =
@@ -207,7 +233,8 @@ const flatten = (v) => {
   return [String(v)]
 }
 
-// The API keys errors by dotted path, for example "personal.date_of_birth"
+// The API keys errors by dotted path, for example "personal.date_of_birth".
+// Image errors are keyed by the field name: "id_front" and "id_back".
 function collectErrors(errors) {
   const fields = {}
   const general = []
@@ -258,7 +285,9 @@ function dobProblem(dob, minAge) {
   return ''
 }
 
-function validate(form, minAge) {
+const employerIsRequired = (form) => EMPLOYER_REQUIRED_FOR.includes(form?.employment?.employment_status)
+
+function validate(form, files, minAge) {
   const errs = {}
   const val = (p) => String(getAt(form, p) ?? '').trim()
 
@@ -270,16 +299,23 @@ function validate(form, minAge) {
     }
   })
 
+  if (employerIsRequired(form) && !val('employment.employer_name')) {
+    errs['employment.employer_name'] = 'Employer is required when you are employed or self-employed.'
+  }
+
   if (!errs['personal.date_of_birth']) {
     const problem = dobProblem(val('personal.date_of_birth'), minAge)
     if (problem) errs['personal.date_of_birth'] = problem
   }
   if (!errs['personal.phone_number'] && !PHONE_RE.test(val('personal.phone_number'))) {
-    errs['personal.phone_number'] = 'Enter a valid phone number, for example +180129345678.'
+    errs['personal.phone_number'] = 'Enter a valid phone number, for example +2348012345678.'
   }
   if (!errs['identification.id_number'] && val('identification.id_number').length < 4) {
     errs['identification.id_number'] = 'Enter the full ID number as shown on your document.'
   }
+
+  if (!files?.id_front) errs.id_front = 'Please add a photo of the front of your ID document.'
+  if (!files?.id_back) errs.id_back = 'Please add a photo of the back of your ID document.'
 
   return errs
 }
@@ -302,8 +338,100 @@ function buildPayload(form) {
   }
 }
 
+// POST /api/kyc/submit/ is multipart/form-data. Sections go as dotted keys
+// ("personal.full_name"), the images as the top-level fields id_front and id_back.
+// Empty optional values are left out, booleans are sent as "true" / "false".
+function toKycFormData(sections, files) {
+  const fd = new FormData()
+
+  Object.entries(sections).forEach(([section, obj]) => {
+    Object.entries(obj).forEach(([key, value]) => {
+      const name = `${section}.${key}`
+      if (typeof value === 'boolean') fd.append(name, value ? 'true' : 'false')
+      else if (value !== null && value !== undefined && String(value).trim() !== '') fd.append(name, value)
+    })
+  })
+
+  fd.append('id_front', files.id_front.file, files.id_front.file.name)
+  fd.append('id_back', files.id_back.file, files.id_back.file.name)
+  return fd
+}
+
+/* ── Image helpers ─────────────────────────────── */
+
+const extOf = (name) => {
+  const m = /\.([a-z0-9]+)$/i.exec(name || '')
+  return m ? m[1].toLowerCase() : ''
+}
+
+const isHeic = (file) => {
+  const ext = extOf(file?.name)
+  const type = String(file?.type || '').toLowerCase()
+  return ext === 'heic' || ext === 'heif' || type === 'image/heic' || type === 'image/heif'
+}
+
+// image_formats may come back as ["JPG", "PNG"] or as mime types, so both are normalised
+function imageRules(options) {
+  const maxMb = Number(options?.image_max_mb) > 0 ? Number(options.image_max_mb) : DEFAULT_IMAGE_MAX_MB
+
+  let exts = DEFAULT_IMAGE_EXTS
+  if (Array.isArray(options?.image_formats) && options.image_formats.length) {
+    const set = new Set()
+    options.image_formats.forEach((f) => {
+      const x = String(f).toLowerCase().replace(/^image\//, '').replace(/^\./, '')
+      if (x === 'jpg' || x === 'jpeg') {
+        set.add('jpg')
+        set.add('jpeg')
+      } else if (x === 'heic' || x === 'heif') {
+        set.add('heic')
+        set.add('heif')
+      } else if (x) {
+        set.add(x)
+      }
+    })
+    if (set.size) exts = [...set]
+  }
+
+  const label = [...new Set(exts.map((e) => (e === 'jpeg' ? 'jpg' : e === 'heif' ? 'heic' : e).toUpperCase()))].join(', ')
+  const accept = [...exts.map((e) => `.${e}`), ...exts.map((e) => `image/${e === 'jpg' ? 'jpeg' : e}`)].join(',')
+
+  return { maxMb, exts, label, accept }
+}
+
+function imageProblem(file, rules) {
+  if (!file) return 'Please choose an image.'
+  if (!rules.exts.includes(extOf(file.name)) && !/^image\//i.test(file.type || '')) {
+    return `Unsupported file type. Use ${rules.label}.`
+  }
+  if (!rules.exts.includes(extOf(file.name)) && extOf(file.name)) {
+    return `Unsupported file type. Use ${rules.label}.`
+  }
+  if (file.size === 0) return 'This file is empty. Please choose another image.'
+  if (file.size > rules.maxMb * 1024 * 1024) {
+    return `The image is too large. The maximum size is ${rules.maxMb} MB.`
+  }
+  return ''
+}
+
+const formatSize = (bytes) => {
+  if (!bytes) return ''
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const prefersNativeCamera = () => {
+  try {
+    return window.matchMedia?.('(pointer: coarse)').matches
+  } catch {
+    return false
+  }
+}
+
+const canUseLiveCamera = () => Boolean(navigator.mediaDevices?.getUserMedia)
+
 // Starting values: the last submission (for a declined user), then known profile data.
 // The ID number is never pre-filled because it only comes back masked.
+// The images are never pre-filled either: they are locked after submit and must be sent again.
 function buildInitial(prefill, previous, options) {
   const first = (a, b) => (a !== undefined && a !== null && a !== '' ? a : (b ?? ''))
   const valid = (list, v) => (options?.[list] || []).some((o) => o.value === v) ? v : ''
@@ -369,6 +497,9 @@ const primaryBtn =
 
 const ghostBtn =
   'inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-white/15 px-5 text-sm font-medium text-slate-200 transition-colors hover:border-white/30 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70'
+
+const smallBtn =
+  'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-white/[0.07] px-3 text-xs font-medium text-slate-100 transition-colors hover:bg-white/[0.12] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70 disabled:cursor-not-allowed disabled:opacity-60'
 
 /* ────────────────────────────────────────────────
    SHARED PIECES
@@ -557,10 +688,10 @@ function StatusCard({ status, st, submission, canSubmit, reduce }) {
     message = `Your documents${when ? ` were submitted on ${when} and` : ''} are with our team for review. We will email you the outcome.`
   } else if (st === 'rejected') {
     message = canSubmit
-      ? 'Your last submission could not be approved. Please check the reason below, correct your details and submit again.'
+      ? 'Your last submission could not be approved. Please check the reason below, correct your details, add a new set of ID photos and submit again.'
       : 'Your last submission could not be approved and you have no attempts left. Please contact support for help.'
   } else {
-    message = 'Complete the form below to verify your identity. It takes a few minutes and unlocks live trading.'
+    message = 'Complete the form below and add photos of your ID to verify your identity. It takes a few minutes and unlocks live trading.'
   }
 
   return (
@@ -637,6 +768,10 @@ function SubmissionDetails({ sub, options }) {
           <Detail label="ID type" value={optLabel(options, 'id_types', id.id_type)} />
           <Detail label="ID number" value={id.id_number} mono />
         </DetailGrid>
+        <p className="mt-4 flex items-start gap-2 text-xs text-slate-400">
+          <ShieldCheck className="mt-px h-3.5 w-3.5 shrink-0 text-[#3DDC97]" aria-hidden="true" />
+          <span>Your ID photos are stored privately and can only be viewed by our verification team.</span>
+        </p>
       </Card>
 
       <Card icon={Briefcase} title="Employment and finances">
@@ -922,15 +1057,332 @@ function CheckField({ path, children, optional }) {
 }
 
 /* ────────────────────────────────────────────────
+   ID IMAGE CAPTURE / UPLOAD
+──────────────────────────────────────────────── */
+
+// Live camera for desktops and laptops (phones use the native camera through the file input)
+function CameraModal({ title, maxBytes, onCapture, onClose, onUnavailable }) {
+  const videoRef = useRef(null)
+  const streamRef = useRef(null)
+  const [ready, setReady] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState('')
+
+  useEffect(() => {
+    let alive = true
+
+    ;(async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        })
+        if (!alive) {
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
+        streamRef.current = stream
+        const v = videoRef.current
+        if (v) {
+          v.srcObject = stream
+          await v.play().catch(() => {})
+        }
+        setReady(true)
+      } catch (err) {
+        if (!alive) return
+        if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
+          setProblem('Camera access was blocked. Allow the camera in your browser settings, or upload a file instead.')
+        } else if (err?.name === 'NotFoundError' || err?.name === 'OverconstrainedError') {
+          setProblem('No camera was found on this device. Please upload a file instead.')
+        } else {
+          setProblem('We could not start the camera. Please upload a file instead.')
+        }
+      }
+    })()
+
+    return () => {
+      alive = false
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [onClose])
+
+  const snap = async () => {
+    const v = videoRef.current
+    if (!v || !v.videoWidth || busy) return
+    setBusy(true)
+
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = v.videoWidth
+      canvas.height = v.videoHeight
+      canvas.getContext('2d').drawImage(v, 0, 0, canvas.width, canvas.height)
+
+      let blob = null
+      for (const quality of [0.92, 0.82, 0.7, 0.55]) {
+        // eslint-disable-next-line no-await-in-loop
+        blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality))
+        if (blob && blob.size <= maxBytes) break
+      }
+
+      if (!blob) {
+        setProblem('We could not take the photo. Please try again.')
+        return
+      }
+
+      onCapture(new File([blob], `id-photo-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Take a photo: ${title}`}
+    >
+      <div className="w-full max-w-lg overflow-hidden rounded-t-2xl bg-[#14212D] sm:rounded-2xl">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <h3 className="text-sm font-semibold text-white">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close camera"
+            className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="relative aspect-[4/3] w-full bg-black">
+          <video ref={videoRef} playsInline muted autoPlay className="h-full w-full object-contain" />
+          {ready && (
+            <div
+              className="pointer-events-none absolute inset-[8%] rounded-xl border-2 border-dashed border-white/60"
+              aria-hidden="true"
+            />
+          )}
+          {!ready && !problem && (
+            <div className="absolute inset-0 grid place-items-center text-slate-300">
+              <Loader2 className="h-6 w-6 animate-spin" aria-hidden="true" />
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-3 p-4">
+          {problem ? (
+            <div role="alert" className="rounded-xl bg-[#F6465D]/10 px-3.5 py-3 text-sm text-red-200">
+              {problem}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400">
+              Place your ID inside the frame. Make sure all four edges are visible and the text is sharp, without glare.
+            </p>
+          )}
+
+          <div className="flex gap-2">
+            {problem ? (
+              <button type="button" onClick={onUnavailable} className={`${primaryBtn} flex-1`}>
+                <Upload className="h-4 w-4" aria-hidden="true" />
+                Upload a file
+              </button>
+            ) : (
+              <button type="button" onClick={snap} disabled={!ready || busy} className={`${primaryBtn} flex-1`}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Camera className="h-4 w-4" aria-hidden="true" />}
+                Take photo
+              </button>
+            )}
+            <button type="button" onClick={onClose} className={ghostBtn}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+// `entry` is { file, url } and is owned by the form: the preview URL is created (and revoked)
+// in the pick and remove handlers, so this component needs no effect for it.
+// An empty url means the file cannot be previewed in the browser (HEIC).
+function IdImageField({ field, label, entry, error, rules, onPick, onRemove }) {
+  const id = idOf(field)
+  const fileRef = useRef(null)
+  const captureRef = useRef(null)
+  const [cameraOpen, setCameraOpen] = useState(false)
+
+  const file = entry?.file || null
+  const previewUrl = entry?.url || ''
+
+  const onInputChange = (e) => {
+    const picked = e.target.files?.[0]
+    e.target.value = '' // lets the same file be chosen again
+    if (picked) onPick(field, picked)
+  }
+
+  const takePhoto = () => {
+    if (prefersNativeCamera() || !canUseLiveCamera()) {
+      captureRef.current?.click()
+    } else {
+      setCameraOpen(true)
+    }
+  }
+
+  const upload = () => fileRef.current?.click()
+
+  return (
+    <div className="min-w-0">
+      <p id={`${id}-label`} className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+        {label}
+      </p>
+
+      {/* Native pickers. The second one asks phones to open the camera directly. */}
+      <input ref={fileRef} id={id} name={field} type="file" accept={rules.accept} onChange={onInputChange} className="sr-only" tabIndex={-1} />
+      <input
+        ref={captureRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={onInputChange}
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+
+      <div
+        tabIndex={-1}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describe(id, error)}
+        aria-labelledby={`${id}-label`}
+        className={`overflow-hidden rounded-xl bg-[#0E1822] ring-1 outline-none ${
+          error ? 'ring-[#F6465D]/60' : file ? 'ring-[#3DDC97]/40' : 'ring-white/10'
+        }`}
+      >
+        <div className="relative grid aspect-[1.6/1] w-full place-items-center bg-black/20">
+          {file ? (
+            previewUrl ? (
+              <img src={previewUrl} alt={`${label} preview`} className="h-full w-full object-contain" />
+            ) : (
+              <div className="flex flex-col items-center gap-2 px-4 text-center text-slate-300">
+                <ImageIcon className="h-8 w-8 text-slate-400" aria-hidden="true" />
+                <p className="text-xs">HEIC photos cannot be previewed in the browser, but this one is ready to submit.</p>
+              </div>
+            )
+          ) : (
+            <div className="flex flex-col items-center gap-2 px-4 text-center">
+              <span className="grid h-11 w-11 place-items-center rounded-full bg-white/[0.06] text-slate-400">
+                <ImageIcon className="h-5 w-5" aria-hidden="true" />
+              </span>
+              <p className="text-sm text-slate-300">No photo added yet</p>
+              <p className="text-xs text-slate-500">
+                {rules.label}, up to {rules.maxMb} MB
+              </p>
+            </div>
+          )}
+
+          {file && (
+            <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-[#3DDC97] px-2 py-0.5 text-[11px] font-semibold text-[#06231A]">
+              <Check className="h-3 w-3" aria-hidden="true" />
+              Added
+            </span>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 p-2.5">
+          <button type="button" onClick={takePhoto} className={smallBtn}>
+            <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+            {file ? 'Retake' : 'Take photo'}
+          </button>
+          <button type="button" onClick={upload} className={smallBtn}>
+            <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+            {file ? 'Replace' : 'Upload image'}
+          </button>
+          {file && (
+            <button
+              type="button"
+              onClick={() => onRemove(field)}
+              aria-label={`Remove ${label}`}
+              className="ml-auto grid h-9 w-9 place-items-center rounded-lg text-slate-400 transition-colors hover:bg-[#F6465D]/10 hover:text-red-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3DDC97]/70"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+
+        {file && (
+          <p className="truncate border-t border-white/[0.06] px-3 py-2 text-[11px] text-slate-500">
+            {file.name} · {formatSize(file.size)}
+          </p>
+        )}
+      </div>
+
+      <AnimatePresence initial={false}>
+        {error && (
+          <motion.p
+            key="error"
+            id={`${id}-error`}
+            role="alert"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="mt-1.5 flex items-start gap-1.5 text-xs text-red-300"
+          >
+            <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0 text-[#F6465D]" aria-hidden="true" />
+            <span className="min-w-0 break-words">{error}</span>
+          </motion.p>
+        )}
+      </AnimatePresence>
+
+      {cameraOpen && (
+        <CameraModal
+          title={label}
+          maxBytes={rules.maxMb * 1024 * 1024}
+          onClose={() => setCameraOpen(false)}
+          onCapture={(captured) => {
+            setCameraOpen(false)
+            onPick(field, captured)
+          }}
+          onUnavailable={() => {
+            setCameraOpen(false)
+            upload()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────
    THE FORM
 ──────────────────────────────────────────────── */
 
 function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
   const init = useRef({ options, previous })
   const [form, setForm] = useState(null)
+  // Each entry is { file, url } where url is the object URL used for the preview
+  const [files, setFiles] = useState({ id_front: null, id_back: null })
+  const filesRef = useRef(files)
   const [errors, setErrors] = useState({})
   const [banner, setBanner] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [uploadPct, setUploadPct] = useState(0)
   const [cooldown, setCooldown] = useState(0)
 
   const formRef = useRef(null)
@@ -938,6 +1390,7 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
   const bannerId = useRef(0)
 
   const minAge = Number(options?.min_age) || 18
+  const rules = useMemo(() => imageRules(options), [options])
 
   // Pre-fill from the profile (and the last submission when resubmitting)
   useEffect(() => {
@@ -953,6 +1406,16 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
       alive = false
     }
   }, [])
+
+  // Release any preview URLs still held when the form goes away
+  useEffect(
+    () => () => {
+      Object.values(filesRef.current).forEach((entry) => {
+        if (entry?.url) URL.revokeObjectURL(entry.url)
+      })
+    },
+    [],
+  )
 
   // Counts down after a 429
   useEffect(() => {
@@ -976,26 +1439,58 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
     })
   }
 
+  const clearError = (key) =>
+    setErrors((prev) => {
+      if (!prev[key]) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+
   const setAt = (path, value) => {
     const [section, key] = path.split('.')
     setForm((f) => ({ ...f, [section]: { ...f[section], [key]: value } }))
-    setErrors((prev) => {
-      if (!prev[path]) return prev
-      const next = { ...prev }
-      delete next[path]
-      return next
-    })
+    clearError(path)
+    // The employer error depends on the employment status
+    if (path === 'employment.employment_status') clearError('employment.employer_name')
   }
 
+  // Swaps an image and releases the preview URL of the one it replaces
+  const commitImage = (key, next) => {
+    const prev = filesRef.current[key]
+    if (prev?.url) URL.revokeObjectURL(prev.url)
+    const nextFiles = { ...filesRef.current, [key]: next }
+    filesRef.current = nextFiles
+    setFiles(nextFiles)
+  }
+
+  // Checks the file on the client first so the user does not waste an upload
+  const pickImage = (key, file) => {
+    const problem = imageProblem(file, rules)
+    if (problem) {
+      setErrors((prev) => ({ ...prev, [key]: problem }))
+      return
+    }
+    commitImage(key, { file, url: isHeic(file) ? '' : URL.createObjectURL(file) })
+    clearError(key)
+  }
+
+  const removeImage = (key) => commitImage(key, null)
+
   const progress = useMemo(() => {
-    if (!form) return { done: 0, total: REQUIRED.length }
-    return { done: REQUIRED.filter(([p]) => isFilled(form, p)).length, total: REQUIRED.length }
-  }, [form])
+    const images = IMAGE_KEYS.filter((k) => files[k]).length
+    if (!form) return { done: images, total: TOTAL_REQUIRED }
+    return { done: REQUIRED.filter(([p]) => isFilled(form, p)).length + images, total: TOTAL_REQUIRED }
+  }, [form, files])
 
   const handleError = (err) => {
     const res = err?.response
     if (!res) {
-      showBanner('error', 'Network error. Check your connection and try again.')
+      if (err?.code === 'ECONNABORTED') {
+        showBanner('error', 'The upload took too long. Check your connection and try again.')
+      } else {
+        showBanner('error', 'Network error. Check your connection and try again.')
+      }
       return
     }
 
@@ -1033,7 +1528,7 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
     }
 
     if (status === 409) {
-      if (code === 'kyc_already_pending' || data?.data?.kyc_status) {
+      if (code === 'kyc_already_pending' || code === 'kyc_already_approved' || data?.data?.kyc_status) {
         onRefresh(message || 'Your verification is already under review.')
         return
       }
@@ -1045,10 +1540,27 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
       return
     }
 
+    // A JSON body was sent instead of multipart. This should never happen from this form.
+    if (status === 415) {
+      showBanner('error', 'Your request could not be read. Please refresh the page and try again.')
+      return
+    }
+
     if (status === 429) {
       const wait = Number(data?.data?.retry_after_seconds)
       if (Number.isFinite(wait) && wait > 0) setCooldown(Math.min(Math.ceil(wait), 300))
       showBanner('warn', message || 'Too many requests. Please wait a moment and try again.')
+      return
+    }
+
+    // The image host failed. Nothing was saved, so the user can simply submit again.
+    if (status === 502) {
+      showBanner('warn', message || 'We could not upload your images. Nothing was saved, please press submit again.')
+      return
+    }
+
+    if (status === 503) {
+      showBanner('warn', message || 'Image uploads are temporarily unavailable. Please try again later.')
       return
     }
 
@@ -1059,7 +1571,7 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
     e.preventDefault()
     if (submitting || cooldown > 0 || !form) return
 
-    const clientErrors = validate(form, minAge)
+    const clientErrors = validate(form, files, minAge)
     if (Object.keys(clientErrors).length) {
       setErrors(clientErrors)
       showBanner('error', 'Please correct the highlighted fields.')
@@ -1068,11 +1580,19 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
     }
 
     setSubmitting(true)
+    setUploadPct(0)
     setBanner(null)
     setErrors({})
 
     try {
-      const res = await api.post('/api/kyc/submit/', buildPayload(form))
+      const body = toKycFormData(buildPayload(form), files)
+      // No Content-Type header here: the browser adds multipart/form-data with the boundary
+      const res = await api.post('/api/kyc/submit/', body, {
+        timeout: UPLOAD_TIMEOUT_MS,
+        onUploadProgress: (ev) => {
+          if (ev.total) setUploadPct(Math.min(100, Math.round((ev.loaded * 100) / ev.total)))
+        },
+      })
       onSubmitted(res.data?.data, res.data?.message || 'KYC submitted. We will review it and email you the outcome.')
     } catch (err) {
       handleError(err)
@@ -1093,6 +1613,8 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
   }
 
   const sexItems = options?.sex || []
+  const employerRequired = employerIsRequired(form)
+  const imagesDone = IMAGE_KEYS.filter((k) => files[k]).length
 
   return (
     <FormCtx.Provider value={{ form, setAt, errors }}>
@@ -1129,7 +1651,7 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
                 type="tel"
                 inputMode="tel"
                 autoComplete="tel"
-                placeholder="+1 (202) 555-0147"
+                placeholder="+234 801 234 5678"
                 hint="Include the country code."
               />
             </div>
@@ -1183,6 +1705,44 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
             </div>
           </Card>
 
+          {/* ID photos */}
+          <Card icon={Camera} title="ID photos" progress={{ done: imagesDone, total: IMAGE_KEYS.length }}>
+            <p className="mb-4 text-sm leading-relaxed text-slate-300">
+              Take a photo or upload an image of the front and back of the government ID you selected above. For a
+              passport, add the photo page again or the back cover.
+            </p>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              {IMAGE_KEYS.map((key) => (
+                <IdImageField
+                  key={key}
+                  field={key}
+                  label={IMAGE_LABELS[key]}
+                  entry={files[key]}
+                  error={errors[key]}
+                  rules={rules}
+                  onPick={pickImage}
+                  onRemove={removeImage}
+                />
+              ))}
+            </div>
+
+            <ul className="mt-4 space-y-1.5 rounded-xl bg-white/[0.04] px-3.5 py-3 text-xs text-slate-400">
+              <li className="flex items-start gap-2">
+                <Info className="mt-px h-3.5 w-3.5 shrink-0 text-sky-300" aria-hidden="true" />
+                <span>Use a well lit place, avoid glare and make sure no edges are cropped. All text must be readable.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Info className="mt-px h-3.5 w-3.5 shrink-0 text-sky-300" aria-hidden="true" />
+                <span>The photos are locked once submitted. If a submission is declined, you will add a new set.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <ShieldCheck className="mt-px h-3.5 w-3.5 shrink-0 text-[#3DDC97]" aria-hidden="true" />
+                <span>Your photos are stored privately and are only visible to our verification team.</span>
+              </li>
+            </ul>
+          </Card>
+
           {/* Employment */}
           <Card icon={Briefcase} title="Employment and finances" progress={sectionProgress(form, 'employment')}>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -1198,8 +1758,14 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
                 placeholder="Select a source"
                 items={options?.sources_of_income || []}
               />
-              <TextField path="employment.occupation" label="Occupation" optional autoComplete="organization-title" />
-              <TextField path="employment.employer_name" label="Employer" optional autoComplete="organization" />
+              <TextField path="employment.occupation" label="Occupation" autoComplete="organization-title" />
+              <TextField
+                path="employment.employer_name"
+                label="Employer"
+                optional={!employerRequired}
+                autoComplete="organization"
+                hint={employerRequired ? undefined : 'Required if you are employed or self-employed.'}
+              />
               <SelectField
                 path="employment.annual_income_range"
                 label="Annual income"
@@ -1274,16 +1840,28 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
             <div className="min-w-0 flex-1" aria-live="polite">
               <p className="text-xs text-slate-400">
-                Required fields:{' '}
-                <span className="font-mono text-slate-200">
-                  {progress.done} of {progress.total}
-                </span>
+                {submitting ? (
+                  uploadPct >= 100 ? (
+                    'Upload complete. Finishing up, please keep this page open.'
+                  ) : (
+                    'Uploading your documents, please keep this page open.'
+                  )
+                ) : (
+                  <>
+                    Required fields:{' '}
+                    <span className="font-mono text-slate-200">
+                      {progress.done} of {progress.total}
+                    </span>
+                  </>
+                )}
               </p>
               <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
                 <motion.div
                   className="h-full rounded-full bg-[#3DDC97]"
                   initial={false}
-                  animate={{ width: `${(progress.done / progress.total) * 100}%` }}
+                  animate={{
+                    width: submitting ? `${Math.max(uploadPct, 4)}%` : `${(progress.done / progress.total) * 100}%`,
+                  }}
                   transition={{ duration: reduce ? 0 : 0.35, ease: 'easeOut' }}
                 />
               </div>
@@ -1298,7 +1876,7 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
               {submitting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  Submitting…
+                  {uploadPct >= 100 ? 'Processing…' : uploadPct > 0 ? `Uploading ${uploadPct}%` : 'Submitting…'}
                 </>
               ) : cooldown > 0 ? (
                 `Try again in ${cooldown}s`
