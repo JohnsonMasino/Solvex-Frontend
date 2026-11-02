@@ -13,11 +13,10 @@ import {
 } from './copyTradeUtils'
 import { InlineError, Sheet, SimBadge } from './copyTradeShared'
 
-// simulated
 
 const PER_PAGE = 12
 const FILTERS = [['all', 'All'], ['recommended', 'Recommended'], ['popular', 'Popular'], ['eligible', 'Available to me']]
-const SORTS = [['winRate', 'Win rate'], ['pnlPct', 'Return'], ['followers', 'Followers'], ['maxDD', 'Lowest drawdown']]
+const SORTS = [['winRate', 'Win rate'], ['pnlPct', 'Return'], ['followers', 'Followers'], ['maxDD', 'Lowest drawdown'], ['price', 'Price']]
 
 const container = { hidden: {}, show: { transition: { staggerChildren: 0.07, delayChildren: 0.04 } } }
 const item = { hidden: { opacity: 0, y: 14 }, show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } } }
@@ -38,12 +37,25 @@ function SetupRow({ k, children }) {
 /* ───────────── STEP 1: BLOCKED ───────────── */
 
 function BlockedBody({ trader, reasons, balance, tier, onClose }) {
+  const shortfall = Math.max(0, num(trader.price) - balance)
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between rounded-xl bg-[#F6465D]/10 px-3.5 py-3">
-        <span className="text-[12px] text-red-200">Your available balance</span>
-        <span className="font-mono text-sm font-semibold text-red-200">{money(balance)}</span>
-      </div>
+      <dl className="space-y-2 rounded-xl bg-[#F6465D]/10 px-3.5 py-3 text-[12px] text-red-200">
+        <div className="flex items-center justify-between gap-3">
+          <dt>Your available balance</dt>
+          <dd className="font-mono text-sm font-semibold">{money(balance)}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt>Required balance for {trader.handle}</dt>
+          <dd className="font-mono text-sm font-semibold">{money(trader.price)}</dd>
+        </div>
+        {shortfall > 0 && (
+          <div className="flex items-center justify-between gap-3 border-t border-red-200/10 pt-2">
+            <dt>You need</dt>
+            <dd className="font-mono text-sm font-semibold">{money(shortfall)} more</dd>
+          </div>
+        )}
+      </dl>
       <p className="text-[13px] leading-relaxed text-slate-300">
         You cannot copy <span className="font-semibold text-white">{trader.handle}</span> right now:
       </p>
@@ -54,7 +66,7 @@ function BlockedBody({ trader, reasons, balance, tier, onClose }) {
           </li>
         ))}
       </ul>
-      <p className="text-[12px] text-slate-400">Balance tier {tier} of 3. Traders with lower leverage and win rate are available at your current tier.</p>
+      <p className="text-[12px] text-slate-400">Balance tier {tier} of 3. Use the “Available to me” filter to see the traders you can copy with your current balance.</p>
       <div className="flex gap-2.5">
         <button type="button" onClick={onClose} className={`${ghostBtn} flex-1`}>Browse traders</button>
         <Link to={DEPOSIT_ROUTE} className={`${primaryBtn} flex-1`}>Top up balance</Link>
@@ -75,6 +87,7 @@ function ConfirmBody({ trader, onCancel, onProceed }) {
         You can review and change the details before anything is placed.
       </p>
       <dl className="space-y-2 rounded-xl bg-white/[0.04] p-3.5 text-[13px]">
+        <SetupRow k="Required balance">{money(trader.price)}</SetupRow>
         <SetupRow k="Pair">{s.pair}</SetupRow>
         <SetupRow k="Direction"><span style={{ color: long ? GREEN : RED }}>{long ? 'Buy / Long' : 'Sell / Short'}</span></SetupRow>
         <SetupRow k="Leverage">{s.leverage}x</SetupRow>
@@ -93,6 +106,7 @@ function ConfirmBody({ trader, onCancel, onProceed }) {
 
 function CopyForm({ trader, cfg, avail, onBack, onOpened, onStale, onGo }) {
   const s = trader.setup
+  const price = num(trader.price)
   const maxLev = num(cfg?.max_leverage) || 100
   const durations = cfg?.durations_hours?.length ? cfg.durations_hours : [6, 12, 24]
   const minAmt = num(cfg?.min_amount) || 10
@@ -112,11 +126,15 @@ function CopyForm({ trader, cfg, avail, onBack, onOpened, onStale, onGo }) {
   const amt = num(amount)
   const long = s.side === 'buy'
   const marketClosed = cfg?.market_open === false
-  const bad = amt < minAmt ? `Minimum amount is ${money(minAmt)}.` : amt > avail ? `More than your available ${money(avail)}.` : ''
+  // Balance can change while the form is open (e.g. after a refresh), so the price rule is re-checked here too.
+  const belowPrice = avail < price
+  const bad = belowPrice
+    ? `You need at least ${money(price)} available to copy ${trader.handle}. You have ${money(avail)}.`
+    : amt < minAmt ? `Minimum amount is ${money(minAmt)}.` : amt > avail ? `More than your available ${money(avail)}.` : ''
 
   const submit = async (e) => {
     e.preventDefault()
-    if (busy || bad || marketClosed) return
+    if (busy || bad || marketClosed || belowPrice) return
     setBusy(true); setErr(null)
     try {
       const body = { pair: s.pair, side: s.side, amount: amt.toFixed(2), leverage: lev, duration_hours: dur }
@@ -211,7 +229,7 @@ function CopyForm({ trader, cfg, avail, onBack, onOpened, onStale, onGo }) {
 
       <div className="flex gap-2.5">
         <button type="button" onClick={onBack} disabled={busy} className={`${ghostBtn} flex-1`}>Back</button>
-        <button type="submit" disabled={busy || Boolean(bad) || !amount || marketClosed} className={`${primaryBtn} flex-[2]`}>
+        <button type="submit" disabled={busy || Boolean(bad) || !amount || marketClosed || belowPrice} className={`${primaryBtn} flex-[2]`}>
           {busy ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />Opening…</> : 'Enter trade'}
         </button>
       </div>
@@ -280,7 +298,7 @@ export default function CopyTrade() {
 
   const pickSort = (k) => {
     if (sortKey === k) setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))
-    else { setSortKey(k); setSortDir(k === 'maxDD' ? 'asc' : 'desc') }
+    else { setSortKey(k); setSortDir(k === 'maxDD' || k === 'price' ? 'asc' : 'desc') }
     setShown(PER_PAGE)
   }
 
@@ -316,7 +334,7 @@ export default function CopyTrade() {
 
         <motion.section variants={item} aria-label="Copy trading" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
           <h1 className="text-lg font-semibold text-white sm:text-xl">Copy trading</h1>
-          <p className="mt-1 text-[13px] text-slate-400">Pick a trader and open a trade with their setup. You review every detail before it is placed.</p>
+          <p className="mt-1 text-[13px] text-slate-400">Pick a trader and open a trade with their setup. You need an available balance at or above the trader’s required balance. You review every detail before it is placed.</p>
 
           <div className="mt-3 grid grid-cols-2 gap-2 text-center sm:grid-cols-3">
             <div className="min-w-0 rounded-xl bg-white/[0.04] px-2 py-2.5">

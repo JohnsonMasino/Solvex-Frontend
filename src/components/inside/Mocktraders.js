@@ -1,6 +1,4 @@
 // src/data/mockTraders.js
-// SIMULATED DATA: every profile below is generated from a seeded formula. These are not real people and the
-// numbers are not real performance. Every UI that shows them must label them "Simulated".
 
 const seed = (n) => { const x = Math.sin(n + 1) * 10000; return x - Math.floor(x) }
 const rnd = (min, max, n) => min + seed(n) * (max - min)
@@ -13,6 +11,10 @@ const TAGS3 = ['Mid-Large Cap', 'Small Cap', 'Blue Chip', 'DeFi Focus', 'Forex O
 const MEMBERS = ['Pro Trader', 'Standard', 'Elite', 'Rising Star']
 const AVATARS = ['🧑‍💼', '👩‍💻', '🧑‍🚀', '👨‍🎓', '👩‍🔬', '🦸', '🧙', '👨‍💻', '🥷', '👩‍🏫']
 const DURATIONS = [6, 12, 24]
+
+// Copy price range (USD). A user needs an available balance at or above a trader's price to copy them.
+export const MIN_PRICE = 3500
+export const MAX_PRICE = 7300
 
 // Only pairs that exist in the Trade page pair list, so the backend accepts them.
 const ASSETS = [
@@ -46,6 +48,8 @@ export const TRADERS = Array.from({ length: 60 }, (_, i) => {
   const pnlPct = fmt2(rnd(-8, 42, s + 13))
   const bullish = pnlPct >= 0
   const favAsset = pick(ASSETS, s + 18)
+  // Whole-dollar price, always within MIN_PRICE..MAX_PRICE
+  const price = Math.min(MAX_PRICE, Math.max(MIN_PRICE, Math.round(rnd(MIN_PRICE, MAX_PRICE, s + 50))))
 
   return {
     id: i + 1,
@@ -56,6 +60,7 @@ export const TRADERS = Array.from({ length: 60 }, (_, i) => {
     stars: fmt2(rnd(2.5, 5.0, s + 12)),
     tags: [pick(TAGS1, s + 22), pick(TAGS2, s + 23), pick(TAGS3, s + 24)],
     favAsset,
+    price,
     followers: Math.floor(rnd(12, 8400, s + 16)),
     totalPnl, longPnl, shortPnl,
     leverage,
