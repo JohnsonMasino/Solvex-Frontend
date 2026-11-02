@@ -1,6 +1,8 @@
 // src/components/Inside/Navconfig.js
 import {
   ArrowLeftRight,
+  CandlestickChart,
+  Copy,
   Download,
   Landmark,
   LayoutDashboard,
@@ -14,9 +16,11 @@ import {
 
 // Used by the mobile Sidebar.
 // An item with `badge` shows a small animated tag next to its label.
+// Copy sits right below Trade because the two are closely related.
 export const NAV_ITEMS = [
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard, end: true },
   { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
+  { label: 'Copy Trade', to: '/dashboard/copy', icon: Copy },
   { label: 'Deposit', to: '/dashboard/deposit', icon: Download },
   { label: 'Withdraw', to: '/dashboard/withdraw', icon: Upload },
   { label: 'History', to: '/dashboard/transactions', icon: ArrowLeftRight },
@@ -29,7 +33,14 @@ export const NAV_ITEMS = [
 // An item with `badge` shows a small animated tag on top of its link.
 export const DESKTOP_NAV = [
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard, end: true },
-  { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
+  {
+    label: 'Trading',
+    icon: CandlestickChart,
+    children: [
+      { label: 'Trade', to: '/dashboard/trade', icon: TrendingUp },
+      { label: 'Copy Trade', to: '/dashboard/copy', icon: Copy },
+    ],
+  },
   {
     label: 'Wallet',
     icon: Wallet,
