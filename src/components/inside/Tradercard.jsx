@@ -3,7 +3,7 @@ import { memo } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, Loader2, Lock, Users } from 'lucide-react'
 import MiniChart from './Minichart'
-import { GREEN, RED, fmtM, ghostBtn, primaryBtn } from './copyTradeUtils'
+import { GREEN, RED, fmtM, ghostBtn, money, primaryBtn } from './copyTradeUtils'
 import { SimBadge, Stars } from './copyTradeShared'
 
 function Tile({ k, v, color }) {
@@ -61,6 +61,11 @@ function TraderCard({ trader: t, status, onCopy }) {
           <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-slate-300">{s.durationHours}h</span>
           <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-slate-300">TP {s.takeProfit}% / SL {s.stopLoss}%</span>
         </div>
+      </div>
+
+      <div className="flex items-center justify-between rounded-xl bg-white/[0.04] px-3 py-2.5">
+        <span className="text-[11px] text-slate-400">Required balance</span>
+        <span className="font-mono text-sm font-semibold tabular-nums text-white">{money(t.price)}</span>
       </div>
 
       <div className="mt-auto flex items-center justify-between gap-3">

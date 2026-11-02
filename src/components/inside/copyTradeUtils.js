@@ -113,8 +113,18 @@ export function getEligibility(balance, trader, minAmount = 10) {
   const tier = getTier(balance)
   const cap = TIERS[tier]
   const reasons = []
+
+  // Copy price: the user's available balance must be at or above the trader's price.
+  const price = num(trader.price)
+  const shortfall = price > balance ? price - balance : 0
+  if (shortfall > 0) {
+    reasons.push(
+      `This trader requires an available balance of at least ${money(price)}. You need ${money(shortfall)} more to copy them.`,
+    )
+  }
+
   if (balance < minAmount) {
-    reasons.push(`Your available balance is below the ${money(minAmount)} minimum trade amount.`)
+    reasons.push(`Your available balance is below the minimum trade amount.`)
   }
   if (trader.leverage > cap.lev) {
     reasons.push(`Its average leverage (${trader.leverage.toFixed(1)}x) is above the ${cap.lev}x limit for your balance tier.`)
@@ -123,7 +133,7 @@ export function getEligibility(balance, trader, minAmount = 10) {
     reasons.push(`Its win rate (${trader.winRate.toFixed(1)}%) is above the ${cap.wr}% limit for your balance tier.`)
   }
   const next = tier === 1 ? TIER1_MAX : tier === 2 ? TIER2_MAX : null
-  return { ok: reasons.length === 0, reasons, tier, next }
+  return { ok: reasons.length === 0, reasons, tier, next, price, shortfall }
 }
 
 /* ───────────── ENTRY PRICE ───────────── */
