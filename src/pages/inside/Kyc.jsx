@@ -308,7 +308,7 @@ function validate(form, files, minAge) {
     if (problem) errs['personal.date_of_birth'] = problem
   }
   if (!errs['personal.phone_number'] && !PHONE_RE.test(val('personal.phone_number'))) {
-    errs['personal.phone_number'] = 'Enter a valid phone number, for example +2348012345678.'
+    errs['personal.phone_number'] = 'Enter a valid phone number, for example +15550100142.'
   }
   if (!errs['identification.id_number'] && val('identification.id_number').length < 4) {
     errs['identification.id_number'] = 'Enter the full ID number as shown on your document.'
@@ -1651,7 +1651,7 @@ function KycForm({ options, previous, reduce, onSubmitted, onRefresh }) {
                 type="tel"
                 inputMode="tel"
                 autoComplete="tel"
-                placeholder="+234 801 234 5678"
+                placeholder="+1 555-010-0142"
                 hint="Include the country code."
               />
             </div>
