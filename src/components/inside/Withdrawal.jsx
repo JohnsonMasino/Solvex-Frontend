@@ -46,8 +46,15 @@ const NETWORK_STYLE = {
   bep20: 'bg-amber-400/[0.15] text-amber-300',
   erc20: 'bg-violet-400/[0.15] text-violet-300',
   trc20: 'bg-[#F6465D]/[0.15] text-red-300',
+  btc: 'bg-orange-400/[0.15] text-orange-300',
+  eth: 'bg-indigo-400/[0.15] text-indigo-300',
 }
 const NETWORK_FALLBACK = 'bg-sky-400/[0.15] text-sky-300'
+
+// Plain-language name shown under the network title when the label has no brackets
+const ASSET_NAME = { usdt: 'Tether USD', btc: 'Bitcoin', eth: 'Ethereum' }
+// Decimals used only if the config does not send them
+const DEFAULT_DECIMALS = { usdt: 6, btc: 8, eth: 8 }
 
 const NOTICE_STYLE = {
   success: { cls: 'bg-[#3DDC97]/10 text-[#9BF0C8]', icon: CheckCircle2, color: 'text-[#3DDC97]' },
@@ -79,7 +86,7 @@ function makeMoney(currency) {
   }
 }
 
-// Rates need more precision than balances: $1.0002
+// Rates need more precision than balances: $1.0002 or $95,123.45
 function makeRate(currency) {
   try {
     const f = new Intl.NumberFormat('en-US', {
@@ -101,6 +108,12 @@ const trimZeros = (v) => {
   return s.replace(/0+$/, '').replace(/\.$/, '')
 }
 
+// Round DOWN to `d` decimals (the server never pays out more than requested)
+const floorTo = (v, d) => {
+  const f = 10 ** d
+  return Math.floor(v * f + 1e-9) / f
+}
+
 // Fee in USD, rounded to 2 decimals (same rule the server documents: usd_amount x fee_percent / 100)
 const feeOf = (usd, pct) => Math.round(usd * pct + 1e-9) / 100
 
@@ -117,12 +130,14 @@ function cleanAmount(raw, decimals = 2) {
 // "USDT (BEP20 – BNB Smart Chain)" -> { title: "USDT", sub: "BEP20 – BNB Smart Chain" }
 function splitLabel(label, fallback) {
   const m = /^(.*?)\s*\((.*)\)\s*$/.exec(label || '')
-  if (m) return { title: m[1] || 'USDT', sub: m[2] }
+  if (m) return { title: m[1] || fallback.toUpperCase(), sub: m[2] }
   return { title: label || fallback.toUpperCase(), sub: '' }
 }
 
-// Withdrawals are USDT only, and a network is usable only when the server enables it and has a live rate
-const isUsdtNetwork = (n) => String(n?.asset || 'usdt').toLowerCase() === 'usdt'
+// The crypto paid out on a network: usdt | btc | eth
+const assetOf = (n) => String(n?.asset || 'usdt').toLowerCase()
+
+// A network is usable only when the server enables it and has a live rate
 const isNetworkAvailable = (n) => Boolean(n?.withdrawal_enabled) && num(n?.rate) > 0
 
 // Checks an address against the network's regex from the config endpoint
@@ -202,6 +217,9 @@ function describeSubmitError(err, ctx) {
     }
     if (code === 'withdrawal_below_minimum') {
       return { message: '', amount: serverMsg || 'The amount is below the minimum withdrawal.', refresh: true }
+    }
+    if (code === 'invalid_address') {
+      return { message: '', address: serverMsg || 'Enter a valid wallet address for this network.' }
     }
 
     const errors = data?.errors || {}
@@ -581,7 +599,7 @@ function NetworkOption({ n, selected, onSelect, reduce }) {
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-medium text-white sm:text-sm">{title}</span>
         <span className="mt-0.5 block truncate text-[11px] text-slate-400 sm:text-xs">
-          {available ? sub || 'Tether USD' : 'Temporarily unavailable'}
+          {available ? sub || ASSET_NAME[assetOf(n)] || '' : 'Temporarily unavailable'}
         </span>
       </span>
       <span
@@ -621,13 +639,15 @@ function FormStep({
   onPaste,
   setNetwork,
   activeNetwork,
+  symbol,
   rate,
   fmtRate,
   minUsd,
   feePct,
   fee,
   total,
-  usdt,
+  payout,
+  decimals,
   amountMsg,
   addressMsg,
   addressOk,
@@ -707,7 +727,8 @@ function FormStep({
       <section aria-label="Network" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
         <p className="px-0.5 text-[13px] font-semibold text-white sm:text-sm">Withdraw to which network?</p>
         <p className="mt-0.5 px-0.5 text-[11px] text-slate-400 sm:text-xs">
-          Withdrawals are paid in USDT. Your address must be on the same network, or the funds can be lost.
+          You are paid in the crypto of the network you choose (USDT, BTC or ETH). Your address must be on that exact
+          network, or the funds can be lost.
         </p>
 
         {networks.length === 0 ? (
@@ -732,7 +753,7 @@ function FormStep({
       {/* Address */}
       <section aria-label="Wallet address" className="rounded-2xl bg-[#14212D] p-3 sm:p-4">
         <label htmlFor="withdraw-address" className="block px-0.5 text-[13px] font-semibold text-white sm:text-sm">
-          Your {activeNetwork ? activeNetwork.value.toUpperCase() : 'USDT'} wallet address
+          Your {activeNetwork ? activeNetwork.value.toUpperCase() : symbol} wallet address
         </label>
 
         <div
@@ -781,7 +802,7 @@ function FormStep({
           className={`mt-2 px-0.5 text-[11px] sm:text-xs ${addressMsg ? 'text-red-300' : 'text-slate-400'}`}
           aria-live="polite"
         >
-          {addressMsg || 'Double-check the address. Withdrawals cannot be reversed once sent.'}
+          {addressMsg || 'Double-check the address and network. Withdrawals cannot be reversed once sent.'}
         </p>
       </section>
 
@@ -805,7 +826,7 @@ function FormStep({
                 <div className="flex items-center justify-between gap-3">
                   <dt className="text-slate-400">You receive ≈ (estimated)</dt>
                   <dd className="break-all text-right font-mono tabular-nums text-sky-300">
-                    {trimZeros(usdt.toFixed(6))} USDT
+                    {trimZeros(payout.toFixed(decimals))} {symbol}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
@@ -814,7 +835,9 @@ function FormStep({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <dt className="text-slate-400">Estimated rate</dt>
-                  <dd className="font-mono tabular-nums text-slate-200">1 USDT = {fmtRate(rate)}</dd>
+                  <dd className="font-mono tabular-nums text-slate-200">
+                    1 {symbol} = {fmtRate(rate)}
+                  </dd>
                 </div>
                 <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
                   <dt className="font-medium text-slate-200">Total deducted from balance</dt>
@@ -824,7 +847,7 @@ function FormStep({
               <p className="mt-3 text-[11px] leading-relaxed text-slate-500 sm:text-xs">
                 <RateAge ts={activeNetwork?.rate_updated_at} />
                 {activeNetwork?.rate_updated_at ? '. ' : ''}
-                Fee and USDT amount are estimates. The final figures are fixed by the server when you continue.
+                Fee and {symbol} amount are estimates. The final figures are fixed by the server when you continue.
               </p>
             </div>
           </motion.section>
@@ -885,7 +908,9 @@ function OtpStep({
   const complete = otp.length === OTP_LENGTH
   const coolSecs = Math.ceil(cooldownMs / 1000)
 
-  // Frozen server values. Older withdrawals may have no fee fields.
+  // Frozen server values. Older withdrawals may have no fee fields or no asset field.
+  const symbol = String(withdrawal.asset || 'usdt').toUpperCase()
+  const payoutAmount = withdrawal.amount ?? withdrawal.usdt_amount
   const usdAmount = num(withdrawal.usd_amount)
   const feeUsd = num(withdrawal.fee_usd)
   const feePercent = num(withdrawal.fee_percent)
@@ -938,10 +963,12 @@ function OtpStep({
           <p className="mt-2 break-all font-mono text-2xl font-semibold tabular-nums text-sky-300 sm:text-3xl">
             {money(usdAmount)}
           </p>
-          <p className="mt-1 text-[11px] text-slate-400 sm:text-xs">
-            ≈ <span className="font-medium text-slate-200">{trimZeros(withdrawal.usdt_amount)} USDT</span> sent to your
-            address
-          </p>
+          {payoutAmount != null && (
+            <p className="mt-1 text-[11px] text-slate-400 sm:text-xs">
+              ≈ <span className="font-medium text-slate-200">{trimZeros(payoutAmount)} {symbol}</span> sent to your
+              address
+            </p>
+          )}
         </div>
 
         <dl className="mt-3 space-y-2.5 rounded-xl bg-[#0E1822] p-3.5 text-[13px] sm:p-4 sm:text-sm">
@@ -954,7 +981,9 @@ function OtpStep({
           {lockedRate > 0 && (
             <div className="flex items-center justify-between gap-3">
               <dt className="text-slate-400">Rate</dt>
-              <dd className="font-mono tabular-nums text-slate-200">1 USDT = {fmtRate(lockedRate)}</dd>
+              <dd className="font-mono tabular-nums text-slate-200">
+                1 {symbol} = {fmtRate(lockedRate)}
+              </dd>
             </div>
           )}
           <div
@@ -1283,17 +1312,22 @@ export default function Withdrawal() {
   const feePct = cfg?.withdrawal_fee_percent != null ? num(cfg.withdrawal_fee_percent) : DEFAULT_FEE_PERCENT
   const expiryMinutes = num(cfg?.withdrawal_request_expiry_minutes) || DEFAULT_EXPIRY_MINUTES
 
-  // Only USDT networks are shown (BTC / ETH cannot be withdrawn). Unavailable ones are disabled.
-  const networks = useMemo(() => (cfg?.networks || []).filter(isUsdtNetwork), [cfg])
+  // Every network is listed (USDT BEP20 / ERC20 / TRC20, BTC, ETH). Unavailable ones are shown disabled.
+  const networks = useMemo(() => cfg?.networks || [], [cfg])
   const activeNetwork =
     networks.find((n) => n.value === network && isNetworkAvailable(n)) || networks.find((n) => isNetworkAvailable(n)) || null
   const rate = num(activeNetwork?.rate)
+
+  // The crypto paid out on the selected network
+  const asset = assetOf(activeNetwork)
+  const symbol = asset.toUpperCase()
+  const decimals = num(activeNetwork?.decimals) || DEFAULT_DECIMALS[asset] || 8
 
   const available = num(wallet?.available_balance)
   const amt = num(amount)
   const fee = feeOf(amt, feePct) // estimate
   const total = Math.round((amt + fee) * 100) / 100 // estimate
-  const usdt = rate > 0 ? amt / rate : 0 // estimate
+  const payout = rate > 0 ? floorTo(amt / rate, decimals) : 0 // estimate, rounded down like the server
 
   const belowMin = amt > 0 && amt + 1e-9 < minUsd
   const exceeds = amt > 0 && Boolean(wallet) && total - available > 1e-9
@@ -1374,7 +1408,11 @@ export default function Withdrawal() {
       const minutes = num(d.expires_in_minutes) || expiryMinutes
       closing.current = false
       confirmingRef.current = false
-      setWithdrawal({ ...d, network: String(d.network || activeNetwork.value).toLowerCase() })
+      setWithdrawal({
+        ...d,
+        network: String(d.network || activeNetwork.value).toLowerCase(),
+        asset: String(d.asset || asset).toLowerCase(),
+      })
       setWindowMs(minutes * 60 * 1000)
       setEndAt(Date.now() + minutes * 60 * 1000)
       setResendAt(Date.now() + RESEND_COOLDOWN_SECONDS * 1000)
@@ -1621,13 +1659,15 @@ export default function Withdrawal() {
                   onPaste={onPaste}
                   setNetwork={onNetworkChange}
                   activeNetwork={activeNetwork}
+                  symbol={symbol}
                   rate={rate}
                   fmtRate={fmtRate}
                   minUsd={minUsd}
                   feePct={feePct}
                   fee={fee}
                   total={total}
-                  usdt={usdt}
+                  payout={payout}
+                  decimals={decimals}
                   amountMsg={amountMsg}
                   addressMsg={addressMsg}
                   addressOk={addressOk}
