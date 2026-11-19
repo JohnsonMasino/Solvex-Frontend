@@ -39,6 +39,8 @@ const PROXIES = [
 const GREEN = '#3DDC97'
 const RED = '#3DDC97'
 const AMBER = '#FBBF24'
+// Highest profit % an active trade card will ever display (keeps the animation from spiking to 100%)
+const MAX_PROFIT_PCT = 45
 
 const CRYPTO = ('BTC ETH BNB SOL XRP ADA DOGE TRX TON AVAX LINK DOT MATIC SHIB LTC BCH ATOM UNI XLM ETC FIL APT ARB OP NEAR ' +
   'ICP HBAR VET INJ SUI SEI AAVE MKR RUNE ALGO FTM SAND MANA AXS GRT PEPE WIF FET RNDR STX IMX TIA').split(' ')
@@ -710,7 +712,8 @@ function ActiveTrade({ t, tick, now, reduce }) {
 
   const dir = t.side === 'buy' ? 1 : -1
   const rawPct = entry && cur ? dir * ((cur - entry) / entry) * 100 * num(t.leverage) : 0
-  const pnlPct = Math.max(-100, rawPct) // you cannot lose more than your margin
+  // Profit display is capped at MAX_PROFIT_PCT (45%); loss still cannot exceed your margin (-100%).
+  const pnlPct = Math.min(MAX_PROFIT_PCT, Math.max(-100, rawPct))
   const pnlAmt = (num(t.amount) * pnlPct) / 100
   const win = pnlPct >= 0
   const closeAt = new Date(t.scheduled_close_at).getTime()
